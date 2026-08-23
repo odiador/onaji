@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod cache;
 pub mod config;
+pub mod daemon;
 pub mod domain;
 pub mod fingerprint;
 pub mod graph;
@@ -15,6 +16,7 @@ pub use adapter::{
 };
 pub use cache::{CacheKey, ExecutionCache, TaskExecutionRecord, TaskState};
 pub use config::{ConfigError, ConfigLoader, RawManifest};
+pub use daemon::{DaemonServer, Dispatcher};
 pub use domain::*;
 pub use fingerprint::{Fingerprint, Fingerprinter};
 pub use graph::{DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer, ImpactReport};
@@ -609,6 +611,87 @@ components:
         assert!(inspect
             .children
             .contains(&"Module: :core:network".to_string()));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_json_rpc_flow() {
+        use onaji_protocol::messages::{InitializeParams, RpcRequest};
+
+        let temp_dir = tempfile_dir("onaji_test_dispatcher");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let manifest = temp_dir.join("onaji.yaml");
+        let mut f = File::create(&manifest).unwrap();
+        writeln!(
+            f,
+            r#"version: "1"
+name: "rpc-test"
+resources:
+  spec:
+    type: file
+    path: "./spec.yaml"
+artifacts:
+  art: {{}}
+tasks:
+  task1:
+    inputs: [spec]
+    outputs: [art]
+    run: "echo rpc_ok"
+"#
+        )
+        .unwrap();
+
+        let mut dispatcher = Dispatcher::new(&temp_dir);
+
+        // 1. Initialize
+        let init_req = RpcRequest::new(
+            1,
+            "initialize",
+            Some(
+                serde_json::to_value(InitializeParams {
+                    workspace_root: temp_dir.to_string_lossy().to_string(),
+                    client_info: onaji_protocol::messages::ClientInfo {
+                        name: "test-client".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
+                    capabilities: Default::default(),
+                })
+                .unwrap(),
+            ),
+        );
+
+        let init_resp = dispatcher.dispatch_request(&init_req).await;
+        assert_eq!(init_resp.id, Some(1));
+        assert!(init_resp.result.is_some());
+        assert!(init_resp.error.is_none());
+
+        // 2. Graph Get
+        let graph_req = RpcRequest::new(2, "graph/get", None);
+        let graph_resp = dispatcher.dispatch_request(&graph_req).await;
+        assert_eq!(graph_resp.id, Some(2));
+        assert!(graph_resp.result.is_some());
+
+        // 3. Impact Get
+        let impact_req = RpcRequest::new(
+            3,
+            "impact/get",
+            Some(serde_json::json!({ "resource": "spec" })),
+        );
+        let impact_resp = dispatcher.dispatch_request(&impact_req).await;
+        assert_eq!(impact_resp.id, Some(3));
+        assert!(impact_resp.result.is_some());
+
+        // 4. Pipeline Run
+        let run_req = RpcRequest::new(
+            4,
+            "pipeline/run",
+            Some(serde_json::json!({ "resource": "spec" })),
+        );
+        let run_resp = dispatcher.dispatch_request(&run_req).await;
+        assert_eq!(run_resp.id, Some(4));
+        assert!(run_resp.result.is_some());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

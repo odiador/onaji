@@ -82,6 +82,30 @@ enum Commands {
     /// Validate the manifest syntax and verify DAG invariants
     Check,
 
+    /// Start the JSON-RPC 2.0 Daemon server (for IDE extensions / remote clients)
+    Daemon {
+        #[arg(
+            long,
+            help = "Unix domain socket path (macOS/Linux) or Named Pipe (Windows)"
+        )]
+        socket: Option<PathBuf>,
+
+        #[arg(long, default_value = "true", help = "Run over standard I/O streams")]
+        stdio: bool,
+    },
+
+    /// Send a JSON-RPC request to the Onaji daemon
+    Rpc {
+        #[arg(help = "RPC method name (e.g. 'initialize', 'graph/get', 'pipeline/run')")]
+        method: String,
+
+        #[arg(short, long, help = "Optional JSON parameters string")]
+        params: Option<String>,
+
+        #[arg(long, help = "Optional socket path to connect to")]
+        socket: Option<PathBuf>,
+    },
+
     /// Preview which tasks and artifacts are affected by a resource change
     Impact {
         #[arg(short, long, help = "ID of the resource to simulate change for")]
@@ -103,6 +127,12 @@ async fn main() {
     match cli.command {
         Commands::Watch { debounce } => handle_watch(&cli.config, debounce).await,
         Commands::Run { resource } => handle_run(&cli.config, resource).await,
+        Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
+        Commands::Rpc {
+            method,
+            params,
+            socket,
+        } => handle_rpc(&cli.config, method, params, socket).await,
         Commands::Inspect { target } => handle_inspect(&cli.config, target),
         Commands::Validate { target } => handle_validate(&cli.config, target),
         Commands::Graph { format } => handle_graph(&cli.config, format),
@@ -110,6 +140,49 @@ async fn main() {
         Commands::Check => handle_check(&cli.config),
         Commands::Impact { resource } => handle_impact(&cli.config, &resource),
     }
+}
+
+async fn handle_daemon(config_path: &Path, socket: Option<PathBuf>, _stdio: bool) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let mut server = onaji_core::DaemonServer::new(&workspace_root);
+
+    if let Some(sock_path) = socket {
+        #[cfg(unix)]
+        {
+            println!("Starting Onaji Daemon on socket: {}", sock_path.display());
+            if let Err(err) = server.run_unix_socket(sock_path).await {
+                eprintln!("Daemon error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("Unix domain socket is only supported on Unix systems");
+            std::process::exit(1);
+        }
+    } else {
+        if let Err(err) = server.run_stdio().await {
+            eprintln!("Daemon stdio error: {}", err);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn handle_rpc(
+    config_path: &Path,
+    method: String,
+    params_str: Option<String>,
+    _socket: Option<PathBuf>,
+) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let mut dispatcher = onaji_core::Dispatcher::new(&workspace_root);
+
+    let parsed_params: Option<serde_json::Value> =
+        params_str.and_then(|s| serde_json::from_str(&s).ok());
+    let req = onaji_protocol::messages::RpcRequest::new(1, method, parsed_params);
+
+    let resp = dispatcher.dispatch_request(&req).await;
+    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
 }
 
 fn handle_inspect(config_path: &Path, target: Option<String>) {

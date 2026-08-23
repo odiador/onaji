@@ -1,0 +1,86 @@
+{
+  "name": "onaji-vscode",
+  "displayName": "Onaji Reactive Automation",
+  "description": "Visual Studio Code interface for the Onaji Universal Reactive Engine",
+  "version": "0.1.0",
+  "publisher": "odiador",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Build"
+  ],
+  "activationEvents": [
+    "workspaceContains:onaji.yaml",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "onaji-container",
+          "title": "Onaji",
+          "icon": "$(sync~spin)"
+        }
+      ]
+    },
+    "views": {
+      "onaji-container": [
+        {
+          "id": "onaji.tasksView",
+          "name": "Pipeline Tasks",
+          "icon": "$(tasklist)"
+        },
+        {
+          "id": "onaji.resourcesView",
+          "name": "Observed Resources",
+          "icon": "$(file-code)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "onaji.startDaemon",
+        "title": "Onaji: Start Daemon",
+        "category": "Onaji"
+      },
+      {
+        "command": "onaji.runPipeline",
+        "title": "Onaji: Run Active Pipeline",
+        "category": "Onaji",
+        "icon": "$(play)"
+      },
+      {
+        "command": "onaji.showGraph",
+        "title": "Onaji: Inspect Dependency Graph",
+        "category": "Onaji"
+      },
+      {
+        "command": "onaji.validate",
+        "title": "Onaji: Validate Configuration",
+        "category": "Onaji"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "onaji.runPipeline",
+          "when": "view == onaji.tasksView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
