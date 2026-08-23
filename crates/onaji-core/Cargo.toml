@@ -1,0 +1,18 @@
+[package]
+name = "onaji-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+onaji-protocol = { path = "../onaji-protocol" }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+petgraph = { workspace = true }
+xxhash-rust = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+tracing = { workspace = true }

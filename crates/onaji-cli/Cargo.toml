@@ -1,0 +1,21 @@
+[package]
+name = "onaji-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "onaji"
+path = "src/main.rs"
+
+[dependencies]
+onaji-core = { path = "../onaji-core" }
+onaji-protocol = { path = "../onaji-protocol" }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }

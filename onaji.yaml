@@ -1,0 +1,61 @@
+version: "1"
+name: "onaji-demo-workspace"
+
+resources:
+  openapi_spec:
+    type: file
+    path: "./backend/api/openapi.yaml"
+    debounce_ms: 250
+    description: "OpenAPI v3 contract specification"
+
+  docs_source:
+    type: file
+    path: "./docs"
+    debounce_ms: 500
+    description: "Documentation markdown files"
+
+artifacts:
+  validated_contract:
+    description: "Linter validated OpenAPI schema"
+
+  kotlin_client_sdk:
+    description: "Generated Kotlin Multiplatform client SDK"
+
+  android_build_classes:
+    description: "Compiled Kotlin Android binaries"
+
+  docs_html:
+    description: "Rendered documentation site"
+
+tasks:
+  validate_contract:
+    description: "Validate OpenAPI contract syntax and breaking changes"
+    inputs:
+      - openapi_spec
+    outputs:
+      - validated_contract
+    run: "test -f ./backend/api/openapi.yaml && echo 'OpenAPI contract valid'"
+
+  generate_kotlin:
+    description: "Generate Kotlin SDK models and API client"
+    inputs:
+      - validated_contract
+    outputs:
+      - kotlin_client_sdk
+    run: "./scripts/generate-kotlin-client.sh"
+
+  compile_android:
+    description: "Compile and execute Android unit tests"
+    inputs:
+      - kotlin_client_sdk
+    outputs:
+      - android_build_classes
+    run: "echo 'Compiling Kotlin Multiplatform Android SDK... OK'"
+
+  build_docs:
+    description: "Generate static documentation site"
+    inputs:
+      - docs_source
+    outputs:
+      - docs_html
+    run: "echo 'Building static documentation site... OK'"

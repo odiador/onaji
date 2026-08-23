@@ -1,0 +1,14 @@
+schema_version: "1.0"
+project:
+  name: "onaji"
+  package: "dev.odiador.onaji"
+  display_name: "Onaji Reactive Automation Engine"
+  description: "Universal reactive, incremental automation engine for software engineering workflows."
+  version: "0.1.0-alpha"
+
+spec_store: "openspec"
+standards:
+  protocol: "JSON-RPC 2.0"
+  config_format: "YAML"
+  core_runtime: "Rust (Tokio)"
+  client_sdk: "TypeScript (VS Code API)"
