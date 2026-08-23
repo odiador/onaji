@@ -113,11 +113,7 @@ impl ConfigLoader {
                 })
                 .collect();
 
-            let outputs: Vec<ArtifactId> = raw_task
-                .outputs
-                .iter()
-                .map(ArtifactId::new)
-                .collect();
+            let outputs: Vec<ArtifactId> = raw_task.outputs.iter().map(ArtifactId::new).collect();
 
             let action = Action::Command {
                 run: raw_task.run.clone(),

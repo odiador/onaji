@@ -3,6 +3,7 @@ pub mod config;
 pub mod domain;
 pub mod fingerprint;
 pub mod graph;
+pub mod http;
 pub mod runner;
 pub mod scheduler;
 pub mod watcher;
@@ -12,6 +13,9 @@ pub use config::{ConfigError, ConfigLoader, RawManifest};
 pub use domain::*;
 pub use fingerprint::{Fingerprint, Fingerprinter};
 pub use graph::{DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer, ImpactReport};
+pub use http::{
+    ContentState, HttpPollOutcome, HttpPoller, HttpResourceState, ResourceAvailability,
+};
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 pub use scheduler::{PipelineExecutionSummary, TaskScheduler};
 pub use watcher::{EventNormalizer, NormalizationResult, ReactiveWatcher, WatcherError};
@@ -347,6 +351,140 @@ tasks:
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_http_poller_lifecycle_and_invariants() {
+        use std::collections::HashMap;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let mut poller = HttpPoller::new();
+        let resource_id = ResourceId::new("remote_openapi");
+        let headers = HashMap::new();
+
+        // 1. Initial 200 OK with ETag -> Modified
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"v1-hash\"")
+                    .set_body_string("openapi: 3.0.0\ntitle: V1 API"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let url = format!("{}/openapi.yaml", mock_server.uri());
+        let res1 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert_eq!(res1.availability, ResourceAvailability::Available);
+        assert!(matches!(res1.content_state, ContentState::Modified { .. }));
+        assert_eq!(res1.emitted_events.len(), 2); // Available + Modified
+
+        // 2. Subsequent 304 Not Modified -> Unchanged
+        mock_server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .and(header("If-None-Match", "\"v1-hash\""))
+            .respond_with(ResponseTemplate::new(304))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let res2 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert_eq!(res2.availability, ResourceAvailability::Available);
+        assert_eq!(res2.content_state, ContentState::Unchanged);
+        assert!(res2.emitted_events.is_empty()); // No event because availability didn't change and content unchanged
+
+        // 3. Server sends 200 with DIFFERENT ETag but SAME body -> Unchanged (Fingerprint is authority)
+        mock_server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"v2-flaky-hash\"")
+                    .set_body_string("openapi: 3.0.0\ntitle: V1 API"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let res3 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert_eq!(res3.availability, ResourceAvailability::Available);
+        assert_eq!(res3.content_state, ContentState::Unchanged);
+
+        // 4. Server sends 200 with CHANGED body -> Modified
+        mock_server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"v3-real-hash\"")
+                    .set_body_string("openapi: 3.0.0\ntitle: V2 API Updated"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let res4 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert_eq!(res4.availability, ResourceAvailability::Available);
+        assert!(matches!(res4.content_state, ContentState::Modified { .. }));
+
+        // 5. Server returns 500 Internal Server Error -> Degraded (Never triggers Modified)
+        mock_server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let res5 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert!(matches!(
+            res5.availability,
+            ResourceAvailability::Degraded {
+                status: Some(500),
+                ..
+            }
+        ));
+        assert_eq!(res5.content_state, ContentState::Unknown);
+        assert_eq!(res5.emitted_events.len(), 1);
+        assert!(matches!(
+            res5.emitted_events[0].event_type,
+            EventType::Degraded {
+                status: Some(500),
+                ..
+            }
+        ));
+
+        // 6. Server returns 404 Not Found -> Degraded
+        mock_server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/openapi.yaml"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let res6 = poller.poll_resource(&resource_id, &url, &headers).await;
+        assert!(matches!(
+            res6.availability,
+            ResourceAvailability::Degraded {
+                status: Some(404),
+                ..
+            }
+        ));
+        assert_eq!(res6.content_state, ContentState::Unknown);
+
+        // 7. Connection refused / invalid host -> Unavailable
+        let bad_url = "http://127.0.0.1:1";
+        let res7 = poller.poll_resource(&resource_id, bad_url, &headers).await;
+        assert!(matches!(
+            res7.availability,
+            ResourceAvailability::Unavailable { .. }
+        ));
+        assert_eq!(res7.content_state, ContentState::Unknown);
     }
 
     fn tempfile_dir(name: &str) -> std::path::PathBuf {

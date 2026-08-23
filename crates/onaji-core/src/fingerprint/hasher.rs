@@ -43,9 +43,10 @@ impl Fingerprinter {
         } else if path.is_dir() {
             Self::compute_dir(path)
         } else {
-            Err(io::Error::other(
-                format!("Unsupported file type: {}", path.display()),
-            ))
+            Err(io::Error::other(format!(
+                "Unsupported file type: {}",
+                path.display()
+            )))
         }
     }
 

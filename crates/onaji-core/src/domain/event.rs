@@ -22,7 +22,8 @@ pub enum EventType {
     Modified,
     Deleted,
     Available,
-    Degraded,
+    Degraded { status: Option<u16>, reason: String },
+    Unavailable { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
