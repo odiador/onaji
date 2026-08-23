@@ -1,0 +1,53 @@
+version: "1"
+name: "openapi-kotlin-gradle-e2e"
+
+resources:
+  openapi_spec:
+    type: file
+    path: "./backend/api/openapi.yaml"
+    debounce_ms: 200
+    description: "OpenAPI 3.0 REST contract"
+
+  gradle_config:
+    type: file
+    path: "./android/settings.gradle.kts"
+    debounce_ms: 300
+    description: "Android Gradle multi-module workspace settings"
+
+artifacts:
+  validated_openapi:
+    description: "Verified and linted OpenAPI schema"
+
+  kotlin_client_sdk:
+    description: "Generated Kotlin Multiplatform client SDK files"
+
+  android_build_classes:
+    description: "Compiled Kotlin Android binaries"
+
+tasks:
+  validate_openapi:
+    description: "Validate OpenAPI contract using Onaji OpenAPI Adapter"
+    inputs:
+      - openapi_spec
+    outputs:
+      - validated_openapi
+    run: "../../target/debug/onaji validate ./backend/api/openapi.yaml"
+
+  generate_kotlin_client:
+    description: "Generate Kotlin SDK models and API client"
+    inputs:
+      - validated_openapi
+    outputs:
+      - kotlin_client_sdk
+    run: "./scripts/generate-kotlin-client.sh"
+
+  gradle_check:
+    description: "Execute Gradle compilation and unit tests"
+    inputs:
+      - kotlin_client_sdk
+    outputs:
+      - android_build_classes
+    run: "cd android && ./gradlew compileDebugKotlin test"
+    cache:
+      paths:
+        - "android/settings.gradle.kts"

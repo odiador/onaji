@@ -1,0 +1,8 @@
+#!/bin/sh
+echo "================================================="
+echo " Gradle Build Runner Mock (v8.14)"
+echo " Tasks: $@"
+echo " Modules: :app, :core:network"
+echo " Status: BUILD SUCCESSFUL"
+echo "================================================="
+exit 0
