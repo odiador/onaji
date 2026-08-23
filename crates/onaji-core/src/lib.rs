@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod cache;
 pub mod config;
 pub mod domain;
@@ -8,6 +9,10 @@ pub mod runner;
 pub mod scheduler;
 pub mod watcher;
 
+pub use adapter::{
+    Adapter, AdapterContext, AdapterError, AdapterRegistry, Capability, DetectionResult,
+    GradleAdapter, InspectionProperty, InspectionResult, OpenApiAdapter, ValidationResult,
+};
 pub use cache::{CacheKey, ExecutionCache, TaskExecutionRecord, TaskState};
 pub use config::{ConfigError, ConfigLoader, RawManifest};
 pub use domain::*;
@@ -485,6 +490,127 @@ tasks:
             ResourceAvailability::Unavailable { .. }
         ));
         assert_eq!(res7.content_state, ContentState::Unknown);
+    }
+
+    #[test]
+    fn test_openapi_adapter_detect_validate_inspect() {
+        let temp_dir = tempfile_dir("onaji_test_openapi_adapter");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let spec_path = temp_dir.join("openapi.yaml");
+        let mut f = File::create(&spec_path).unwrap();
+        writeln!(
+            f,
+            r#"openapi: 3.0.0
+info:
+  title: PetStore API
+  version: 2.1.0
+paths:
+  /pets:
+    get:
+      summary: List pets
+    post:
+      summary: Create pet
+  /pets/{{id}}:
+    get:
+      summary: Get pet
+    delete:
+      summary: Delete pet
+components:
+  schemas:
+    Pet: {{}}
+    Error: {{}}
+"#
+        )
+        .unwrap();
+
+        let adapter = OpenApiAdapter::new();
+        let ctx = AdapterContext::new(&temp_dir).with_resource_path(&spec_path);
+
+        // 1. Detect
+        let detect = adapter.detect(&ctx).unwrap();
+        assert!(detect.matched);
+
+        // 2. Validate
+        let validation = adapter.validate(&ctx).unwrap();
+        assert!(validation.is_valid);
+        assert!(validation.errors.is_empty());
+
+        // 3. Inspect
+        let inspect = adapter.inspect(&ctx).unwrap();
+        assert_eq!(inspect.version.as_deref(), Some("2.1.0"));
+        assert_eq!(
+            inspect
+                .properties
+                .iter()
+                .find(|p| p.key == "Total Endpoints")
+                .map(|p| p.value.as_str()),
+            Some("2")
+        );
+        assert_eq!(
+            inspect
+                .properties
+                .iter()
+                .find(|p| p.key == "Total Schemas")
+                .map(|p| p.value.as_str()),
+            Some("2")
+        );
+        assert_eq!(
+            inspect
+                .properties
+                .iter()
+                .find(|p| p.key == "Method GET")
+                .map(|p| p.value.as_str()),
+            Some("2")
+        );
+        assert_eq!(
+            inspect
+                .properties
+                .iter()
+                .find(|p| p.key == "Method POST")
+                .map(|p| p.value.as_str()),
+            Some("1")
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_gradle_adapter_detect_inspect() {
+        let temp_dir = tempfile_dir("onaji_test_gradle_adapter");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let settings_path = temp_dir.join("settings.gradle.kts");
+        let mut f = File::create(&settings_path).unwrap();
+        writeln!(f, r#"include(":app", ":core:network", ":core:database")"#).unwrap();
+
+        let wrapper_dir = temp_dir.join("gradle/wrapper");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        let wrapper_props = wrapper_dir.join("gradle-wrapper.properties");
+        let mut f2 = File::create(&wrapper_props).unwrap();
+        writeln!(
+            f2,
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14-bin.zip"
+        )
+        .unwrap();
+
+        let adapter = GradleAdapter::new();
+        let ctx = AdapterContext::new(&temp_dir);
+
+        // 1. Detect
+        let detect = adapter.detect(&ctx).unwrap();
+        assert!(detect.matched);
+
+        // 2. Inspect
+        let inspect = adapter.inspect(&ctx).unwrap();
+        assert_eq!(inspect.version.as_deref(), Some("8.14"));
+        assert_eq!(inspect.children.len(), 3);
+        assert!(inspect.children.contains(&"Module: :app".to_string()));
+        assert!(inspect
+            .children
+            .contains(&"Module: :core:network".to_string()));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     fn tempfile_dir(name: &str) -> std::path::PathBuf {
