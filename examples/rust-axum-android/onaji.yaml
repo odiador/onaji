@@ -1,0 +1,73 @@
+version: "1"
+name: "rust-axum-android-e2e"
+
+resources:
+  backend_source:
+    type: file
+    path: "./backend/src/main.rs"
+    debounce_ms: 200
+    description: "Rust / Axum backend application source code"
+
+  backend_health:
+    type: http
+    url: "http://127.0.0.1:3000/health"
+    interval_ms: 2000
+    description: "Axum backend health monitor"
+
+  openapi_spec:
+    type: file
+    path: "./backend/api/openapi.yaml"
+    debounce_ms: 200
+    description: "OpenAPI 3.0 REST contract for Axum service"
+
+  android_config:
+    type: file
+    path: "./android/settings.gradle.kts"
+    debounce_ms: 300
+    description: "Android Gradle multi-module workspace settings"
+
+artifacts:
+  backend_binary:
+    description: "Compiled Axum backend binary / verification status"
+
+  validated_openapi:
+    description: "Verified and linted OpenAPI schema"
+
+  kotlin_client_sdk:
+    description: "Generated Kotlin Multiplatform client SDK files"
+
+  android_build_classes:
+    description: "Compiled Kotlin Android binaries"
+
+tasks:
+  build_backend:
+    description: "Compile and check Rust / Axum backend service"
+    inputs:
+      - backend_source
+    outputs:
+      - backend_binary
+    run: "cargo check --manifest-path backend/Cargo.toml"
+
+  validate_openapi:
+    description: "Validate OpenAPI contract using Onaji OpenAPI Adapter"
+    inputs:
+      - openapi_spec
+    outputs:
+      - validated_openapi
+    run: "../../target/debug/onaji validate ./backend/api/openapi.yaml"
+
+  generate_kotlin_client:
+    description: "Generate Kotlin SDK models and API client from validated OpenAPI"
+    inputs:
+      - validated_openapi
+    outputs:
+      - kotlin_client_sdk
+    run: "./scripts/generate-kotlin-client.sh"
+
+  compile_android:
+    description: "Execute Gradle compilation and tests on Android project"
+    inputs:
+      - kotlin_client_sdk
+    outputs:
+      - android_build_classes
+    run: "cd android && ./gradlew compileDebugKotlin test"
