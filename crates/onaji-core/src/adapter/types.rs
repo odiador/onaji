@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetectionResult {
     pub matched: bool,
     pub confidence: f32,
@@ -28,7 +29,7 @@ impl DetectionResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ValidationResult {
     pub is_valid: bool,
     pub errors: Vec<String>,
@@ -58,13 +59,13 @@ impl ValidationResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectionProperty {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectionResult {
     pub title: String,
     pub version: Option<String>,

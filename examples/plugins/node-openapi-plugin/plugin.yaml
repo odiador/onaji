@@ -1,0 +1,21 @@
+name: "node-openapi"
+version: "1.0.0"
+protocol: "1"
+
+capabilities:
+  - Detect
+  - Inspect
+  - Validate
+
+resources:
+  - openapi
+  - swagger
+
+runtime:
+  command: "node"
+  args:
+    - "examples/plugins/node-openapi-plugin/index.js"
+
+permissions:
+  workspace_filesystem: true
+  network: false

@@ -219,7 +219,7 @@ fn handle_inspect(config_path: &Path, target: Option<String>) {
     }
 
     for (id, det) in detections {
-        if let Some(adapter) = registry.get(id) {
+        if let Some(adapter) = registry.get(&id) {
             println!(
                 "=== [{}] {} (Confidence: {:.0}%) ===",
                 adapter.id(),
@@ -250,7 +250,7 @@ fn handle_validate(config_path: &Path, target: Option<String>) {
     let detections = registry.detect_all(&ctx);
 
     for (id, _) in detections {
-        if let Some(adapter) = registry.get(id) {
+        if let Some(adapter) = registry.get(&id) {
             found = true;
             println!("Validating with [{}] {}...", adapter.id(), adapter.name());
             match adapter.validate(&ctx) {

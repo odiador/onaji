@@ -1,5 +1,6 @@
 use crate::cache::{CacheKey, TaskState};
 use crate::domain::{Action, Task, TaskId};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Instant;
 use thiserror::Error;
@@ -14,7 +15,7 @@ pub enum RunnerError {
     ExecutionFailed { code: Option<i32>, stderr: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskExecutionResult {
     pub task_id: TaskId,
     pub state: TaskState,

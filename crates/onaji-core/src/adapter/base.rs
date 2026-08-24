@@ -20,8 +20,8 @@ pub enum AdapterError {
 }
 
 pub trait Adapter: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn name(&self) -> &'static str;
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
     fn capabilities(&self) -> &[Capability];
 
     fn has_capability(&self, cap: Capability) -> bool {

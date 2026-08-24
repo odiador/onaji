@@ -6,7 +6,7 @@ use super::types::{DetectionResult, InspectionResult, ValidationResult};
 use std::collections::HashMap;
 
 pub struct AdapterRegistry {
-    adapters: HashMap<&'static str, Box<dyn Adapter>>,
+    adapters: HashMap<String, Box<dyn Adapter>>,
 }
 
 impl Default for AdapterRegistry {
@@ -30,7 +30,7 @@ impl AdapterRegistry {
     }
 
     pub fn register(&mut self, adapter: Box<dyn Adapter>) {
-        self.adapters.insert(adapter.id(), adapter);
+        self.adapters.insert(adapter.id().to_string(), adapter);
     }
 
     pub fn get(&self, id: &str) -> Option<&dyn Adapter> {
@@ -41,12 +41,12 @@ impl AdapterRegistry {
         self.adapters.values().map(|a| a.as_ref()).collect()
     }
 
-    pub fn detect_all(&self, ctx: &AdapterContext) -> Vec<(&'static str, DetectionResult)> {
+    pub fn detect_all(&self, ctx: &AdapterContext) -> Vec<(String, DetectionResult)> {
         let mut results = Vec::new();
         for (id, adapter) in &self.adapters {
             if let Ok(det) = adapter.detect(ctx) {
                 if det.matched {
-                    results.push((*id, det));
+                    results.push((id.clone(), det));
                 }
             }
         }

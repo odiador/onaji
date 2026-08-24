@@ -6,6 +6,7 @@ pub mod domain;
 pub mod fingerprint;
 pub mod graph;
 pub mod http;
+pub mod plugin;
 pub mod runner;
 pub mod scheduler;
 pub mod watcher;
@@ -22,6 +23,9 @@ pub use fingerprint::{Fingerprint, Fingerprinter};
 pub use graph::{DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer, ImpactReport};
 pub use http::{
     ContentState, HttpPollOutcome, HttpPoller, HttpResourceState, ResourceAvailability,
+};
+pub use plugin::{
+    PluginManager, PluginManifest, PluginPermissions, PluginRuntime, SubprocessPluginAdapter,
 };
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 pub use scheduler::{PipelineExecutionSummary, TaskScheduler};

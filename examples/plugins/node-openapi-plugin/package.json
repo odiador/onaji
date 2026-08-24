@@ -1,0 +1,9 @@
+{
+  "name": "@onaji/plugin-openapi-node",
+  "version": "1.0.0",
+  "description": "External OpenAPI Plugin implemented in pure Node.js communicating via JSON-RPC 2.0",
+  "main": "index.js",
+  "bin": {
+    "onaji-plugin-openapi-node": "./index.js"
+  }
+}
