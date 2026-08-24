@@ -30,6 +30,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new onaji.yaml in the current workspace by auto-detecting project structure
+    Init {
+        #[arg(short, long, help = "Force overwrite if onaji.yaml already exists")]
+        force: bool,
+    },
+
     /// Start the reactive daemon watcher loop
     Watch {
         #[arg(
@@ -125,6 +131,7 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init { force } => handle_init(&cli.config, force),
         Commands::Watch { debounce } => handle_watch(&cli.config, debounce).await,
         Commands::Run { resource } => handle_run(&cli.config, resource).await,
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
@@ -593,30 +600,162 @@ fn handle_graph(config_path: &Path, format: GraphFormat) {
     }
 }
 
+fn handle_init(config_path: &Path, force: bool) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let target_manifest = workspace_root.join("onaji.yaml");
+
+    if target_manifest.exists() && !force {
+        println!(
+            "✗ File '{}' already exists. Use --force to overwrite.",
+            target_manifest.display()
+        );
+        return;
+    }
+
+    println!("Scanning workspace for detectable toolchains and resources...");
+    let mut resources = Vec::new();
+    let mut tasks = Vec::new();
+    let mut artifacts = Vec::new();
+
+    let openapi_candidates = [
+        "backend/api/openapi.yaml",
+        "api/openapi.yaml",
+        "openapi.yaml",
+        "openapi.json",
+        "swagger.json",
+    ];
+    let mut has_openapi = false;
+    for cand in &openapi_candidates {
+        if workspace_root.join(cand).exists() {
+            resources.push(format!(
+                "  openapi_spec:\n    type: file\n    path: \"./{}\"\n    debounce_ms: 200\n    description: \"OpenAPI REST contract\"",
+                cand
+            ));
+            artifacts.push("  validated_openapi: {}\n  kotlin_client_sdk: {}".to_string());
+            tasks.push(format!(
+                "  validate_openapi:\n    inputs: [openapi_spec]\n    outputs: [validated_openapi]\n    run: \"onaji validate ./{}\"",
+                cand
+            ));
+            has_openapi = true;
+            break;
+        }
+    }
+
+    if workspace_root.join("settings.gradle.kts").exists()
+        || workspace_root.join("settings.gradle").exists()
+    {
+        resources.push("  gradle_workspace:\n    type: file\n    path: \"./settings.gradle.kts\"\n    debounce_ms: 300\n    description: \"Gradle multi-module build settings\"".to_string());
+        if has_openapi {
+            tasks.push("  build_and_test:\n    inputs: [validated_openapi]\n    outputs: [app_binaries]\n    run: \"./gradlew check\"".to_string());
+            artifacts.push("  app_binaries: {}".to_string());
+        }
+    }
+
+    if workspace_root.join("Cargo.toml").exists() {
+        resources.push("  cargo_workspace:\n    type: file\n    path: \"./Cargo.toml\"\n    debounce_ms: 250\n    description: \"Rust Cargo workspace manifest\"".to_string());
+    }
+
+    if workspace_root.join("package.json").exists() {
+        resources.push("  node_package:\n    type: file\n    path: \"./package.json\"\n    debounce_ms: 200\n    description: \"Node.js package manifest\"".to_string());
+    }
+
+    if resources.is_empty() {
+        resources.push("  main_source:\n    type: file\n    path: \"./src/\"\n    debounce_ms: 250\n    description: \"Source code directory\"".to_string());
+        tasks.push("  build_task:\n    inputs: [main_source]\n    outputs: [build_output]\n    run: \"echo 'Building project...'\"".to_string());
+        artifacts.push("  build_output: {}".to_string());
+    }
+
+    let project_name = workspace_root
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let content = format!(
+        r#"version: "1"
+name: "{}"
+
+resources:
+{}
+
+artifacts:
+{}
+
+tasks:
+{}
+"#,
+        project_name,
+        resources.join("\n\n"),
+        artifacts.join("\n"),
+        tasks.join("\n\n")
+    );
+
+    match std::fs::write(&target_manifest, content) {
+        Ok(_) => {
+            println!(
+                "✓ Created '{}' with auto-detected configuration.",
+                target_manifest.display()
+            );
+            println!("Run `onaji graph` to inspect the DAG, or `onaji watch` to start reactive automation.");
+        }
+        Err(err) => {
+            eprintln!("✗ Failed to write '{}': {}", target_manifest.display(), err);
+        }
+    }
+}
+
 fn handle_doctor(config_path: &Path) {
     println!("=== Onaji Doctor Diagnostics ===\n");
-    println!("Toolchain Check:");
+    println!("Core:");
+    println!(
+        "  ✓ Onaji Engine ............. v{}",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "  ✓ Protocol Version ......... v{}",
+        onaji_protocol::PROTOCOL_VERSION
+    );
+
+    println!("\nToolchains:");
     check_tool("rustc", &["--version"]);
     check_tool("cargo", &["--version"]);
     check_tool("node", &["--version"]);
-    check_tool("pnpm", &["--version"]);
     check_tool("java", &["-version"]);
     check_tool("gradle", &["--version"]);
-    check_tool("docker", &["--version"]);
 
-    println!("\nProject Manifest & DAG:");
+    // Check Android SDK
+    let android_home = std::env::var("ANDROID_HOME").or_else(|_| std::env::var("ANDROID_SDK_ROOT"));
+    match android_home {
+        Ok(path) => println!("  ✓ Android SDK .............. {}", path),
+        Err(_) => println!("  ○ Android SDK .............. (not set in environment)"),
+    }
+
+    println!("\nAdapters & Plugins:");
+    let registry = onaji_core::adapter::AdapterRegistry::with_builtins();
+    for adapter in registry.list() {
+        let caps: Vec<String> = adapter
+            .capabilities()
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        println!("  ✓ [native] {:<18} [{}]", adapter.id(), caps.join(", "));
+    }
+
+    println!("\nWorkspace:");
     if config_path.exists() {
         match ConfigLoader::load_from_file(config_path) {
-            Ok((_manifest, dag)) => {
-                println!("  ✓ {} ............. valid syntax", config_path.display());
+            Ok((manifest, dag)) => {
+                println!("  ✓ Project Name ............. {}", manifest.name);
+                println!(
+                    "  ✓ Manifest ................. {} (valid syntax)",
+                    config_path.display()
+                );
                 println!("  ✓ Dependency DAG ........... valid (no cycles, single producers)");
-                println!("  ✓ Discovered Tasks ......... {}", dag.task_indices.len());
                 println!(
                     "  ✓ Registered Resources ..... {}",
                     dag.resource_indices.len()
                 );
+                println!("  ✓ Tracked Tasks ............ {}", dag.task_indices.len());
                 println!(
-                    "  ✓ Tracked Artifacts ........ {}",
+                    "  ✓ Monitored Artifacts ...... {}",
                     dag.artifact_indices.len()
                 );
                 println!("\nStatus: Ready for reactive orchestration.");
@@ -631,7 +770,7 @@ fn handle_doctor(config_path: &Path) {
         }
     } else {
         println!(
-            "  ⚠ {} ............. not found in current directory",
+            "  ⚠ {} ............. not found (run `onaji init` to generate)",
             config_path.display()
         );
     }
