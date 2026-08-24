@@ -13,7 +13,7 @@ use std::time::Duration;
 #[command(
     name = "onaji",
     about = "Universal reactive automation engine for software engineering workflows",
-    version
+    version = "0.1.0 (protocol v0.1.0)"
 )]
 struct Cli {
     #[arg(

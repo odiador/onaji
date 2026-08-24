@@ -4,8 +4,12 @@
   "description": "Visual Studio Code interface for the Onaji Universal Reactive Engine",
   "version": "0.1.0",
   "publisher": "odiador",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/odiador/onaji"
+  },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Other",
@@ -18,6 +22,21 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Onaji",
+      "properties": {
+        "onaji.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the onaji executable binary"
+        },
+        "onaji.autoStartDaemon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the Onaji Daemon when opening a workspace"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -48,6 +67,12 @@
         "category": "Onaji"
       },
       {
+        "command": "onaji.restartDaemon",
+        "title": "Onaji: Restart Daemon",
+        "category": "Onaji",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "onaji.runPipeline",
         "title": "Onaji: Run Active Pipeline",
         "category": "Onaji",
@@ -59,8 +84,8 @@
         "category": "Onaji"
       },
       {
-        "command": "onaji.validate",
-        "title": "Onaji: Validate Configuration",
+        "command": "onaji.openLogs",
+        "title": "Onaji: Open Output Logs",
         "category": "Onaji"
       }
     ],
@@ -70,17 +95,25 @@
           "command": "onaji.runPipeline",
           "when": "view == onaji.tasksView",
           "group": "navigation"
+        },
+        {
+          "command": "onaji.restartDaemon",
+          "when": "view == onaji.tasksView",
+          "group": "navigation"
         }
       ]
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.3"
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.9.3"
   }
 }

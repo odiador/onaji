@@ -5,6 +5,7 @@ Cargo.lock
 .vscode/
 **/node_modules/
 **/dist/
+*.vsix
 .gradle/
 **/build/
 **/.gradle/
