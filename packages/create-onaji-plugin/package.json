@@ -1,0 +1,12 @@
+{
+  "name": "create-onaji-plugin",
+  "version": "0.1.0",
+  "description": "Scaffold and create a new Onaji external plugin in TypeScript",
+  "main": "bin/create-onaji-plugin.js",
+  "bin": {
+    "create-onaji-plugin": "./bin/create-onaji-plugin.js"
+  },
+  "keywords": ["create", "onaji", "plugin", "scaffold", "cli"],
+  "author": "odiador",
+  "license": "MIT"
+}

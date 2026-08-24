@@ -5,5 +5,8 @@
   "main": "index.js",
   "bin": {
     "onaji-plugin-openapi-node": "./index.js"
+  },
+  "dependencies": {
+    "@onaji/plugin-sdk": "../../packages/plugin-sdk"
   }
 }
