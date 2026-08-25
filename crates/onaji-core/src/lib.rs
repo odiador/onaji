@@ -11,6 +11,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod telemetry;
 pub mod watcher;
+pub mod workspace;
 
 pub use adapter::{
     Adapter, AdapterContext, AdapterError, AdapterRegistry, Capability, DetectionResult,
@@ -36,6 +37,7 @@ pub use telemetry::{
     TelemetryCollector,
 };
 pub use watcher::{EventNormalizer, NormalizationResult, ReactiveWatcher, WatcherError};
+pub use workspace::*;
 
 #[cfg(test)]
 mod tests {
