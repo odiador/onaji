@@ -70,6 +70,24 @@ pub enum Action {
     },
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+pub enum TaskPriority {
+    Background = 10,
+    Low = 25,
+    #[default]
+    Normal = 50,
+    High = 75,
+    Critical = 100,
+}
+
+impl TaskPriority {
+    pub fn score(&self) -> u32 {
+        *self as u32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: TaskId,
@@ -78,6 +96,7 @@ pub struct Task {
     pub outputs: Vec<ArtifactId>,
     pub action: Action,
     pub cache_paths: Vec<PathBuf>,
+    pub priority: TaskPriority,
 }
 
 impl Task {
@@ -94,6 +113,7 @@ impl Task {
             outputs,
             action,
             cache_paths: Vec::new(),
+            priority: TaskPriority::Normal,
         }
     }
 

@@ -36,7 +36,10 @@ impl ClusterCoordinator {
         map.values().map(|w| w.registration.clone()).collect()
     }
 
-    pub fn find_compatible_worker(&self, required_toolchain: Option<&str>) -> Option<Arc<WorkerDaemon>> {
+    pub fn find_compatible_worker(
+        &self,
+        required_toolchain: Option<&str>,
+    ) -> Option<Arc<WorkerDaemon>> {
         let map = self.workers.read().unwrap();
         for worker in map.values() {
             if let Some(req) = required_toolchain {
@@ -50,7 +53,10 @@ impl ClusterCoordinator {
         None
     }
 
-    pub async fn dispatch_task(&self, assignment: TaskAssignment) -> Result<TaskExecutionReport, RunnerError> {
+    pub async fn dispatch_task(
+        &self,
+        assignment: TaskAssignment,
+    ) -> Result<TaskExecutionReport, RunnerError> {
         // Detect toolchain requirement from command
         let req_toolchain = if assignment.action_cmd.contains("gradle") {
             Some("android_sdk")
@@ -60,15 +66,15 @@ impl ClusterCoordinator {
             None
         };
 
-        let worker = self
-            .find_compatible_worker(req_toolchain)
-            .ok_or_else(|| RunnerError::ExecutionFailed {
+        let worker = self.find_compatible_worker(req_toolchain).ok_or_else(|| {
+            RunnerError::ExecutionFailed {
                 code: Some(127),
                 stderr: format!(
                     "No remote worker available with required toolchain capability '{:?}'",
                     req_toolchain
                 ),
-            })?;
+            }
+        })?;
 
         let report = worker.execute_assignment(&assignment);
         Ok(report)

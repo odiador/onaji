@@ -60,6 +60,7 @@ async fn test_remote_cluster_coordinator_and_capability_scheduling() {
             env: HashMap::new(),
         },
         cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
     };
 
     let local_res = local_backend
@@ -88,6 +89,7 @@ async fn test_remote_cluster_coordinator_and_capability_scheduling() {
             env: HashMap::new(),
         },
         cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
     };
 
     let gradle_res = remote_backend

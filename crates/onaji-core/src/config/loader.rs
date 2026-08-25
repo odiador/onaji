@@ -128,6 +128,15 @@ impl ConfigLoader {
             if let Some(cache) = &raw_task.cache {
                 task = task.with_cache_paths(cache.paths.iter().map(PathBuf::from).collect());
             }
+            if let Some(prio_str) = &raw_task.priority {
+                task.priority = match prio_str.to_lowercase().as_str() {
+                    "critical" => crate::domain::TaskPriority::Critical,
+                    "high" => crate::domain::TaskPriority::High,
+                    "low" => crate::domain::TaskPriority::Low,
+                    "background" => crate::domain::TaskPriority::Background,
+                    _ => crate::domain::TaskPriority::Normal,
+                };
+            }
 
             builder = builder.add_task(task);
         }

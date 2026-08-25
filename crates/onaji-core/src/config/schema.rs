@@ -73,6 +73,8 @@ pub struct RawTask {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub cache: Option<RawTaskCache>,
+    #[serde(default)]
+    pub priority: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

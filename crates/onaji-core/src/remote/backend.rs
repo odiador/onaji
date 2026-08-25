@@ -66,7 +66,10 @@ impl ExecutionBackend for RemoteExecutionBackend {
             workspace_id: "default".to_string(),
             action_cmd: cmd,
             env: env.clone(),
-            cache_key: cache_key.as_ref().map(|k| k.to_string()).unwrap_or_default(),
+            cache_key: cache_key
+                .as_ref()
+                .map(|k| k.to_string())
+                .unwrap_or_default(),
             timeout_ms: 30000,
         };
 
