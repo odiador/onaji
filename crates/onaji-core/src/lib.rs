@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod cache;
 pub mod config;
 pub mod daemon;
+pub mod dashboard;
 pub mod domain;
 pub mod fingerprint;
 pub mod graph;
@@ -22,6 +23,7 @@ pub use adapter::{
 pub use cache::{CacheKey, ExecutionCache, TaskExecutionRecord, TaskState};
 pub use config::{ConfigError, ConfigLoader, RawManifest};
 pub use daemon::{DaemonServer, Dispatcher};
+pub use dashboard::*;
 pub use domain::*;
 pub use fingerprint::{Fingerprint, Fingerprinter};
 pub use graph::{DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer, ImpactReport};

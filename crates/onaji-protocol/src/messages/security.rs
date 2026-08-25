@@ -28,13 +28,15 @@ impl Default for SecurityPolicy {
                 "npm".to_string(),
                 "node".to_string(),
                 "echo".to_string(),
-                "sh".to_string(),
             ],
             deny_commands: vec![
                 "sudo".to_string(),
                 "shutdown".to_string(),
                 "reboot".to_string(),
                 "rm -rf /".to_string(),
+                "sh".to_string(),
+                "bash".to_string(),
+                "zsh".to_string(),
             ],
             allow_network: false,
             allowed_env: vec![

@@ -15,9 +15,15 @@ impl PolicyChecker {
     pub fn validate_command(&self, cmd: &str) -> Result<(), SecurityViolation> {
         let trimmed = cmd.trim();
 
-        // 1. Check explicitly forbidden commands
+        // 1. Check explicitly forbidden command strings or subcommands
         for denied in &self.policy.deny_commands {
-            if trimmed.starts_with(denied) || trimmed.contains(&format!(" {} ", denied)) {
+            if trimmed == denied
+                || trimmed.starts_with(&format!("{} ", denied))
+                || trimmed.contains(&format!(" {} ", denied))
+                || trimmed.contains(&format!(";{}", denied))
+                || trimmed.contains(&format!("|{}", denied))
+                || trimmed.contains(&format!("&{}", denied))
+            {
                 return Err(SecurityViolation {
                     violation_type: ViolationType::ForbiddenCommand,
                     task_id: None,
@@ -30,7 +36,26 @@ impl PolicyChecker {
             }
         }
 
-        // 2. Check explicitly allowed root commands
+        // 2. Check for suspicious shell injection characters / chaining operators
+        let suspicious_tokens = [";", "|", "&", "`", "$(", "eval ", "exec "];
+        for tok in suspicious_tokens {
+            if trimmed.contains(tok) {
+                return Err(SecurityViolation {
+                    violation_type: ViolationType::ForbiddenCommand,
+                    task_id: None,
+                    details: format!(
+                        "Command contains forbidden chaining or execution token: '{}'",
+                        tok
+                    ),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                });
+            }
+        }
+
+        // 3. Check explicitly allowed root commands
         let first_word = trimmed
             .split_whitespace()
             .next()

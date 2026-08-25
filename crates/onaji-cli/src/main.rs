@@ -105,6 +105,20 @@ enum Commands {
         command: SecurityCommands,
     },
 
+    /// Launch the real-time interactive web dashboard and cluster inspector
+    Dashboard {
+        #[arg(
+            short,
+            long,
+            default_value_t = 8080,
+            help = "HTTP port to bind the dashboard web server"
+        )]
+        port: u16,
+
+        #[arg(long, help = "Automatically open the dashboard in default web browser")]
+        open: bool,
+    },
+
     /// Inspect a resource or workspace using native adapters
     Inspect {
         #[arg(
@@ -355,6 +369,7 @@ async fn main() {
         Commands::Plugin { command } => handle_plugin(&cli.config, command).await,
         Commands::Workspace { command } => handle_workspace(&cli.config, command),
         Commands::Security { command } => handle_security(&cli.config, command),
+        Commands::Dashboard { port, open } => handle_dashboard(port, open).await,
     }
 }
 
@@ -1751,5 +1766,19 @@ fn handle_security(_config_path: &Path, cmd: SecurityCommands) {
             println!("Resource Limits:      ✓ CPU slots & Process Timeout Enforcement Active");
             println!("\nSecurity Posture:     ENFORCED");
         }
+    }
+}
+
+async fn handle_dashboard(port: u16, open_browser: bool) {
+    let server = onaji_core::dashboard::DashboardServer::new(port);
+    if open_browser {
+        println!(
+            "Opening dashboard in default browser: http://localhost:{}",
+            port
+        );
+    }
+    if let Err(err) = server.run().await {
+        eprintln!("Dashboard server error: {}", err);
+        std::process::exit(1);
     }
 }
