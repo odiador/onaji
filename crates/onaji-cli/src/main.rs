@@ -153,6 +153,45 @@ enum Commands {
         )]
         output: OutputFormat,
     },
+
+    /// Manage, search, install, and publish plugins from the Onaji Registry
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommands {
+    /// Search for plugins in the Onaji Registry
+    Search {
+        #[arg(help = "Search query keyword")]
+        query: String,
+    },
+
+    /// Show detailed metadata and releases for a plugin
+    Info {
+        #[arg(help = "Plugin name (e.g. '@onaji/openapi' or 'openapi')")]
+        name: String,
+    },
+
+    /// Install a plugin and lock its SHA-256 integrity in onaji.lock
+    Add {
+        #[arg(help = "Plugin specification (e.g. '@onaji/openapi' or 'openapi@1.2.0')")]
+        spec: String,
+    },
+
+    /// Remove an installed plugin from workspace
+    Remove {
+        #[arg(help = "Plugin name to remove")]
+        name: String,
+    },
+
+    /// List all installed plugins and their pinned versions in onaji.lock
+    List,
+
+    /// Update installed plugins to their latest compatible releases
+    Update,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
@@ -199,6 +238,7 @@ async fn main() {
             ci,
             output,
         } => handle_impact(&cli.config, &resource, ci, output),
+        Commands::Plugin { command } => handle_plugin(&cli.config, command).await,
     }
 }
 
@@ -1145,4 +1185,134 @@ fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+async fn handle_plugin(config_path: &Path, cmd: PluginCommands) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let client = onaji_core::plugin::PluginRegistryClient::default_client();
+
+    match cmd {
+        PluginCommands::Search { query } => {
+            println!("Searching Onaji Registry for '{}'...", query);
+            match client.search(&query).await {
+                Ok(results) => {
+                    if results.is_empty() {
+                        println!("No plugins found matching '{}'.", query);
+                    } else {
+                        println!("\nFound {} plugins:\n", results.len());
+                        for p in results {
+                            println!(
+                                "  • {:<24} v{:<8} - {}",
+                                p.name, p.latest_version, p.description
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("✗ Registry search error: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        PluginCommands::Info { name } => match client.get_info(&name).await {
+            Ok(info) => {
+                println!("Plugin: {}", info.name);
+                println!("Description: {}", info.description);
+                println!("Latest Version: v{}", info.latest_version);
+                println!("\nReleases ({}):", info.versions.len());
+                for v in info.versions {
+                    let sha_short = if v.sha256.len() >= 12 {
+                        &v.sha256[..12]
+                    } else {
+                        &v.sha256
+                    };
+                    println!(
+                        "  - v{:<8} [protocol v{}] (sha256: {}...)",
+                        v.version, v.protocol_version, sha_short
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!("✗ Failed to fetch plugin info: {}", err);
+                std::process::exit(1);
+            }
+        },
+        PluginCommands::Add { spec } => {
+            println!("Resolving and installing '{}'...", spec);
+            match onaji_core::plugin::PluginInstaller::install(&spec, &workspace_root, &client)
+                .await
+            {
+                Ok(locked) => {
+                    println!(
+                        "✓ Installed '{}' v{} (sha256: {})",
+                        locked.name, locked.version, locked.sha256
+                    );
+                    println!("✓ Updated onaji.lock with deterministic checksum.");
+                }
+                Err(err) => {
+                    eprintln!("✗ Installation failed: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        PluginCommands::Remove { name } => {
+            match onaji_core::plugin::PluginInstaller::uninstall(&name, &workspace_root) {
+                Ok(true) => {
+                    println!("✓ Removed '{}' from workspace and onaji.lock.", name);
+                }
+                Ok(false) => {
+                    println!("○ Plugin '{}' was not found in onaji.lock.", name);
+                }
+                Err(err) => {
+                    eprintln!("✗ Failed to remove plugin: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        PluginCommands::List => {
+            let lockfile = onaji_core::plugin::OnajiLockfile::load_from_dir(&workspace_root)
+                .unwrap_or_default();
+            println!("=== Installed Plugins (onaji.lock) ===");
+            if lockfile.plugins.is_empty() {
+                println!("No external plugins installed in workspace.");
+            } else {
+                for p in lockfile.plugins {
+                    let sha_short = if p.sha256.len() >= 12 {
+                        &p.sha256[..12]
+                    } else {
+                        &p.sha256
+                    };
+                    println!(
+                        "  • {:<24} v{:<8} (sha256: {}...)",
+                        p.name, p.version, sha_short
+                    );
+                }
+            }
+        }
+        PluginCommands::Update => {
+            let lockfile = onaji_core::plugin::OnajiLockfile::load_from_dir(&workspace_root)
+                .unwrap_or_default();
+            if lockfile.plugins.is_empty() {
+                println!("No plugins to update.");
+                return;
+            }
+            println!("Checking updates for {} plugins...", lockfile.plugins.len());
+            for p in &lockfile.plugins {
+                match onaji_core::plugin::PluginInstaller::install(
+                    &p.name,
+                    &workspace_root,
+                    &client,
+                )
+                .await
+                {
+                    Ok(locked) => {
+                        println!("  ✓ {:<24} -> v{}", locked.name, locked.version);
+                    }
+                    Err(err) => {
+                        eprintln!("  ✗ Failed to update '{}': {}", p.name, err);
+                    }
+                }
+            }
+        }
+    }
 }

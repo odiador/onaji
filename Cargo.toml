@@ -24,7 +24,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tokio = { version = "1.38", features = ["full"] }
 notify = "6.1"
 notify-debouncer-mini = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
 wiremock = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
