@@ -9,6 +9,7 @@ pub mod http;
 pub mod plugin;
 pub mod runner;
 pub mod scheduler;
+pub mod telemetry;
 pub mod watcher;
 
 pub use adapter::{
@@ -26,9 +27,14 @@ pub use http::{
 };
 pub use plugin::{
     PluginManager, PluginManifest, PluginPermissions, PluginRuntime, SubprocessPluginAdapter,
+    WasmPluginAdapter, WasmSecurityPolicy,
 };
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 pub use scheduler::{PipelineExecutionSummary, TaskScheduler};
+pub use telemetry::{
+    InMemoryTraceCollector, OnajiMetrics, SpanEvent, SpanKind, SpanRecord, SpanStatus,
+    TelemetryCollector,
+};
 pub use watcher::{EventNormalizer, NormalizationResult, ReactiveWatcher, WatcherError};
 
 #[cfg(test)]

@@ -69,6 +69,25 @@ enum Commands {
 
         #[arg(long, help = "Stop execution immediately on first task failure")]
         fail_fast: bool,
+
+        #[arg(long, help = "Enable structural OpenTelemetry causal tracing")]
+        trace: bool,
+
+        #[arg(
+            long,
+            default_value = "text",
+            help = "Trace export format: text or json"
+        )]
+        trace_format: OutputFormat,
+
+        #[arg(long, help = "Optional file path to output execution trace")]
+        trace_output: Option<PathBuf>,
+    },
+
+    /// Explain why a task was executed or cached using causal graph telemetry
+    Explain {
+        #[arg(help = "Task ID to explain")]
+        task: String,
     },
 
     /// Inspect a resource or workspace using native adapters
@@ -221,7 +240,23 @@ async fn main() {
             ci,
             output,
             fail_fast,
-        } => handle_run(&cli.config, resource, ci, output, fail_fast).await,
+            trace,
+            trace_format,
+            trace_output,
+        } => {
+            handle_run(
+                &cli.config,
+                resource,
+                ci,
+                output,
+                fail_fast,
+                trace,
+                trace_format,
+                trace_output,
+            )
+            .await
+        }
+        Commands::Explain { task } => handle_explain(&cli.config, &task),
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
         Commands::Rpc {
             method,
@@ -513,12 +548,16 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_run(
     config_path: &Path,
     resource_filter: Option<String>,
     _ci: bool,
     output: OutputFormat,
     _fail_fast: bool,
+    trace: bool,
+    trace_format: OutputFormat,
+    trace_output: Option<PathBuf>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
     let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
@@ -546,6 +585,29 @@ async fn handle_run(
             }
             std::process::exit(2);
         }
+    };
+
+    let collector = onaji_core::telemetry::InMemoryTraceCollector::new();
+    let is_tracing = trace
+        || std::env::var("ONAJI_TRACE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+    let root_span_id = if is_tracing {
+        use onaji_core::telemetry::TelemetryCollector;
+        let id = collector.start_span(
+            "pipeline_root",
+            None,
+            "onaji.pipeline.run",
+            onaji_core::telemetry::SpanKind::PipelineRun,
+        );
+        if let Some(r) = &resource_filter {
+            collector.set_attribute(&id, "causal.trigger", r);
+        }
+        collector.set_attribute(&id, "workspace.root", &workspace_root.to_string_lossy());
+        Some(id)
+    } else {
+        None
     };
 
     let mut cache = ExecutionCache::new();
@@ -594,6 +656,55 @@ async fn handle_run(
 
     match scheduler.execute_tasks(&tasks_to_run).await {
         Ok(summary) => {
+            if let Some(root_id) = &root_span_id {
+                use onaji_core::telemetry::TelemetryCollector;
+                for res in &summary.results {
+                    let task_span = collector.start_span(
+                        &format!("task_{}", res.task_id),
+                        Some(root_id),
+                        "onaji.task.execute",
+                        onaji_core::telemetry::SpanKind::TaskExecute,
+                    );
+                    collector.set_attribute(&task_span, "task.id", res.task_id.as_str());
+                    collector.set_attribute(&task_span, "task.state", &format!("{:?}", res.state));
+                    collector.set_attribute(
+                        &task_span,
+                        "task.duration_ms",
+                        &res.duration_ms.to_string(),
+                    );
+                    let status = match res.state {
+                        TaskState::Success => onaji_core::telemetry::SpanStatus::Ok,
+                        TaskState::Cached => onaji_core::telemetry::SpanStatus::Cached,
+                        TaskState::Blocked => onaji_core::telemetry::SpanStatus::Blocked,
+                        TaskState::Failed => onaji_core::telemetry::SpanStatus::Error(format!(
+                            "Exit code {:?}",
+                            res.exit_code
+                        )),
+                        _ => onaji_core::telemetry::SpanStatus::Ok,
+                    };
+                    collector.finish_span(&task_span, status);
+                }
+                let root_status = if summary.success {
+                    onaji_core::telemetry::SpanStatus::Ok
+                } else {
+                    onaji_core::telemetry::SpanStatus::Error("Pipeline failed".to_string())
+                };
+                collector.finish_span(root_id, root_status);
+
+                // Save trace to .onaji/traces/latest.json
+                let trace_json = collector.to_json();
+                let trace_dest = trace_output.unwrap_or_else(|| {
+                    let traces_dir = workspace_root.join(".onaji").join("traces");
+                    std::fs::create_dir_all(&traces_dir).ok();
+                    traces_dir.join("latest.json")
+                });
+                std::fs::write(&trace_dest, &trace_json).ok();
+
+                if trace_format == OutputFormat::Json {
+                    println!("{}", trace_json);
+                }
+            }
+
             match output {
                 OutputFormat::Github => {
                     for res in &summary.results {
@@ -690,7 +801,6 @@ async fn handle_run(
                         "::error title=Onaji Execution Error::Execution error: {}",
                         err
                     );
-                    println!("::endgroup::");
                 }
                 OutputFormat::Json => {
                     let json = serde_json::json!({
@@ -701,10 +811,57 @@ async fn handle_run(
                     println!("{}", serde_json::to_string_pretty(&json).unwrap());
                 }
                 OutputFormat::Text => {
-                    eprintln!("✗ Run failed: {}", err);
+                    eprintln!("✗ Execution error: {}", err);
                 }
             }
             std::process::exit(1);
+        }
+    }
+}
+
+fn handle_explain(config_path: &Path, task_id: &str) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let trace_file = workspace_root
+        .join(".onaji")
+        .join("traces")
+        .join("latest.json");
+    if !trace_file.exists() {
+        eprintln!(
+            "No trace telemetry found in '{}'. Run 'onaji run --trace' first.",
+            workspace_root.display()
+        );
+        std::process::exit(1);
+    }
+
+    let trace_content = std::fs::read_to_string(&trace_file).unwrap_or_default();
+    let spans: Vec<onaji_core::telemetry::SpanRecord> =
+        serde_json::from_str(&trace_content).unwrap_or_default();
+
+    println!(
+        "=== Causal Telemetry Explanation for Task '{}' ===",
+        task_id
+    );
+    let task_span = spans.iter().find(|s| {
+        s.kind == onaji_core::telemetry::SpanKind::TaskExecute
+            && s.attributes.get("task.id").map(|s| s.as_str()) == Some(task_id)
+    });
+
+    match task_span {
+        Some(span) => {
+            println!("  • State:       {:?}", span.status);
+            println!(
+                "  • Duration:    {} ms",
+                span.duration_ms.unwrap_or_default()
+            );
+            for (k, v) in &span.attributes {
+                println!("  • {:<12} {}", format!("{}:", k), v);
+            }
+        }
+        None => {
+            println!(
+                "  Task '{}' was not executed in the latest recorded pipeline run.",
+                task_id
+            );
         }
     }
 }

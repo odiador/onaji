@@ -88,9 +88,9 @@ impl WasmPluginAdapter {
             .instantiate(&mut store, &self.module)
             .map_err(|e| AdapterError::Execution(format!("Failed to instantiate WASM: {}", e)))?;
 
-        let memory = instance
-            .get_memory(&mut store, "memory")
-            .ok_or_else(|| AdapterError::Execution("WASM module missing exported 'memory'".to_string()))?;
+        let memory = instance.get_memory(&mut store, "memory").ok_or_else(|| {
+            AdapterError::Execution("WASM module missing exported 'memory'".to_string())
+        })?;
 
         // 1. Allocate buffer in WASM memory for request
         let payload_bytes = json_payload.as_bytes();
@@ -98,21 +98,27 @@ impl WasmPluginAdapter {
 
         let malloc = instance
             .get_typed_func::<i32, i32>(&mut store, "onaji_malloc")
-            .map_err(|e| AdapterError::Execution(format!("WASM missing exported 'onaji_malloc': {}", e)))?;
+            .map_err(|e| {
+                AdapterError::Execution(format!("WASM missing exported 'onaji_malloc': {}", e))
+            })?;
 
-        let req_ptr = malloc
-            .call(&mut store, payload_len)
-            .map_err(|e| AdapterError::Execution(format!("Failed to allocate WASM memory: {}", e)))?;
+        let req_ptr = malloc.call(&mut store, payload_len).map_err(|e| {
+            AdapterError::Execution(format!("Failed to allocate WASM memory: {}", e))
+        })?;
 
         // Write request bytes into linear memory
         memory
             .write(&mut store, req_ptr as usize, payload_bytes)
-            .map_err(|e| AdapterError::Execution(format!("Failed to write to WASM memory: {}", e)))?;
+            .map_err(|e| {
+                AdapterError::Execution(format!("Failed to write to WASM memory: {}", e))
+            })?;
 
         // 2. Call `onaji_call(method_code, req_ptr, req_len) -> i64`
         let onaji_call = instance
             .get_typed_func::<(i32, i32, i32), i64>(&mut store, "onaji_call")
-            .map_err(|e| AdapterError::Execution(format!("WASM missing exported 'onaji_call': {}", e)))?;
+            .map_err(|e| {
+                AdapterError::Execution(format!("WASM missing exported 'onaji_call': {}", e))
+            })?;
 
         let packed_res = onaji_call
             .call(&mut store, (method_code, req_ptr, payload_len))
