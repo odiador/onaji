@@ -10,6 +10,7 @@ pub mod plugin;
 pub mod remote;
 pub mod runner;
 pub mod scheduler;
+pub mod security;
 pub mod telemetry;
 pub mod watcher;
 pub mod workspace;
@@ -34,6 +35,7 @@ pub use plugin::{
 pub use remote::*;
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 pub use scheduler::{PipelineExecutionSummary, TaskScheduler};
+pub use security::*;
 pub use telemetry::{
     InMemoryTraceCollector, OnajiMetrics, SpanEvent, SpanKind, SpanRecord, SpanStatus,
     TelemetryCollector,
