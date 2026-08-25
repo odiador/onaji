@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Onaji Architecture & Pipeline Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Onaji CLI
+        run: cargo build -p onaji-cli --release
+
+      - name: Run Onaji Doctor
+        run: ./target/release/onaji doctor
+
+      - name: Verify Manifest & Invariants
+        run: ./target/release/onaji check --ci --output github
+
+      - name: Run Reactive Incremental Pipeline
+        run: ./target/release/onaji run --ci --output github
+
+      - name: Run Rust Workspace Unit & Integration Tests
+        run: cargo test --workspace

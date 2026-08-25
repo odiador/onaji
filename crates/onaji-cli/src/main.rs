@@ -47,7 +47,7 @@ enum Commands {
         debounce: u64,
     },
 
-    /// Run tasks or trigger a pipeline manually
+    /// Run tasks or trigger a pipeline manually or in CI/CD environments
     Run {
         #[arg(
             short,
@@ -55,6 +55,20 @@ enum Commands {
             help = "Optional resource ID to simulate change and run impact for"
         )]
         resource: Option<String>,
+
+        #[arg(long, help = "Run in non-interactive CI mode with strict exit codes")]
+        ci: bool,
+
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            help = "Output formatting: text, github, or json"
+        )]
+        output: OutputFormat,
+
+        #[arg(long, help = "Stop execution immediately on first task failure")]
+        fail_fast: bool,
     },
 
     /// Inspect a resource or workspace using native adapters
@@ -86,7 +100,18 @@ enum Commands {
     Doctor,
 
     /// Validate the manifest syntax and verify DAG invariants
-    Check,
+    Check {
+        #[arg(long, help = "Run in non-interactive CI mode with strict exit codes")]
+        ci: bool,
+
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            help = "Output formatting: text, github, or json"
+        )]
+        output: OutputFormat,
+    },
 
     /// Start the JSON-RPC 2.0 Daemon server (for IDE extensions / remote clients)
     Daemon {
@@ -116,7 +141,26 @@ enum Commands {
     Impact {
         #[arg(short, long, help = "ID of the resource to simulate change for")]
         resource: String,
+
+        #[arg(long, help = "Run in non-interactive CI mode")]
+        ci: bool,
+
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            help = "Output formatting: text, github, or json"
+        )]
+        output: OutputFormat,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Github,
+    Json,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -133,7 +177,12 @@ async fn main() {
     match cli.command {
         Commands::Init { force } => handle_init(&cli.config, force),
         Commands::Watch { debounce } => handle_watch(&cli.config, debounce).await,
-        Commands::Run { resource } => handle_run(&cli.config, resource).await,
+        Commands::Run {
+            resource,
+            ci,
+            output,
+            fail_fast,
+        } => handle_run(&cli.config, resource, ci, output, fail_fast).await,
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
         Commands::Rpc {
             method,
@@ -144,8 +193,12 @@ async fn main() {
         Commands::Validate { target } => handle_validate(&cli.config, target),
         Commands::Graph { format } => handle_graph(&cli.config, format),
         Commands::Doctor => handle_doctor(&cli.config),
-        Commands::Check => handle_check(&cli.config),
-        Commands::Impact { resource } => handle_impact(&cli.config, &resource),
+        Commands::Check { ci, output } => handle_check(&cli.config, ci, output),
+        Commands::Impact {
+            resource,
+            ci,
+            output,
+        } => handle_impact(&cli.config, &resource, ci, output),
     }
 }
 
@@ -420,13 +473,38 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64) {
     }
 }
 
-async fn handle_run(config_path: &Path, resource_filter: Option<String>) {
+async fn handle_run(
+    config_path: &Path,
+    resource_filter: Option<String>,
+    _ci: bool,
+    output: OutputFormat,
+    _fail_fast: bool,
+) {
     let workspace_root = resolve_workspace_root(config_path);
     let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
         Err(err) => {
-            eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
-            std::process::exit(1);
+            match output {
+                OutputFormat::Github => {
+                    println!(
+                        "::error title=Onaji Manifest Error::Failed to load manifest '{}': {}",
+                        config_path.display(),
+                        err
+                    );
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to load manifest '{}': {}", config_path.display(), err),
+                        "exit_code": 2
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
+                }
+            }
+            std::process::exit(2);
         }
     };
 
@@ -439,54 +517,210 @@ async fn handle_run(config_path: &Path, resource_filter: Option<String>) {
         match analyzer.analyze_resource_change(&res_id) {
             Some(report) => report.affected_tasks,
             None => {
-                eprintln!("✗ Resource '{}' not found in DAG.", res_id);
-                std::process::exit(1);
+                match output {
+                    OutputFormat::Github => {
+                        println!(
+                            "::error title=Onaji Resource Error::Resource '{}' not found in DAG",
+                            res_id
+                        );
+                    }
+                    OutputFormat::Json => {
+                        let json = serde_json::json!({
+                            "success": false,
+                            "error": format!("Resource '{}' not found in DAG", res_id),
+                            "exit_code": 3
+                        });
+                        println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                    }
+                    OutputFormat::Text => {
+                        eprintln!("✗ Resource '{}' not found in DAG.", res_id);
+                    }
+                }
+                std::process::exit(3);
             }
         }
     } else {
         dag.task_indices.keys().cloned().collect()
     };
 
-    println!("Running {} tasks...", tasks_to_run.len());
+    if output == OutputFormat::Github {
+        println!(
+            "::group::Onaji CI Pipeline Execution ({} tasks)",
+            tasks_to_run.len()
+        );
+    } else if output == OutputFormat::Text {
+        println!("Running {} tasks...", tasks_to_run.len());
+    }
+
     match scheduler.execute_tasks(&tasks_to_run).await {
         Ok(summary) => {
-            for res in summary.results {
-                match res.state {
-                    TaskState::Success => {
-                        println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms)
+            match output {
+                OutputFormat::Github => {
+                    for res in &summary.results {
+                        match res.state {
+                            TaskState::Success => {
+                                println!(
+                                    "::notice title=Task Succeeded::{:<24} ({}ms)",
+                                    res.task_id, res.duration_ms
+                                );
+                            }
+                            TaskState::Cached => {
+                                println!(
+                                    "::notice title=Task Cached::{:<24} ⚡ (incremental cache hit)",
+                                    res.task_id
+                                );
+                            }
+                            TaskState::Blocked => {
+                                println!(
+                                    "::warning title=Task Blocked::{:<24} ○ (upstream dependency failed)",
+                                    res.task_id
+                                );
+                            }
+                            TaskState::Failed => {
+                                println!(
+                                    "::error title=Task Failed::{:<24} ✗ (exit code: {:?})",
+                                    res.task_id, res.exit_code
+                                );
+                                if !res.stderr.is_empty() {
+                                    for line in res.stderr.lines() {
+                                        println!("      | {}", line);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                    TaskState::Cached => println!("  ⚡ {:<26}   cached", res.task_id),
-                    TaskState::Blocked => println!("  ○ {:<26}  blocked", res.task_id),
-                    TaskState::Failed => println!(
-                        "  ✗ {:<26}   failed (exit code: {:?})",
-                        res.task_id, res.exit_code
-                    ),
-                    _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                    println!("::endgroup::");
+                    if summary.success {
+                        println!(
+                            "::notice title=Onaji CI::All {} tasks completed successfully in {}ms",
+                            summary.results.len(),
+                            summary.total_duration_ms
+                        );
+                    } else {
+                        println!("::error title=Onaji CI::Pipeline execution failed");
+                    }
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "success": summary.success,
+                        "total_duration_ms": summary.total_duration_ms,
+                        "results": summary.results.iter().map(|r| {
+                            serde_json::json!({
+                                "task_id": r.task_id.as_str(),
+                                "state": format!("{:?}", r.state),
+                                "duration_ms": r.duration_ms,
+                                "exit_code": r.exit_code,
+                            })
+                        }).collect::<Vec<_>>()
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    for res in &summary.results {
+                        match res.state {
+                            TaskState::Success => {
+                                println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms)
+                            }
+                            TaskState::Cached => println!("  ⚡ {:<26}   cached", res.task_id),
+                            TaskState::Blocked => println!("  ○ {:<26}  blocked", res.task_id),
+                            TaskState::Failed => println!(
+                                "  ✗ {:<26}   failed (exit code: {:?})",
+                                res.task_id, res.exit_code
+                            ),
+                            _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                        }
+                    }
+                    println!(
+                        "\nCompleted in {} ms | Status: {}",
+                        summary.total_duration_ms,
+                        if summary.success { "PASSED" } else { "FAILED" }
+                    );
                 }
             }
-            println!("\nCompleted in {} ms", summary.total_duration_ms);
+
+            if !summary.success {
+                std::process::exit(1);
+            }
         }
         Err(err) => {
-            eprintln!("✗ Run failed: {}", err);
+            match output {
+                OutputFormat::Github => {
+                    println!(
+                        "::error title=Onaji Execution Error::Execution error: {}",
+                        err
+                    );
+                    println!("::endgroup::");
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "success": false,
+                        "error": format!("Execution error: {}", err),
+                        "exit_code": 1
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    eprintln!("✗ Run failed: {}", err);
+                }
+            }
             std::process::exit(1);
         }
     }
 }
 
-fn handle_check(config_path: &Path) {
+fn handle_check(config_path: &Path, _ci: bool, output: OutputFormat) {
     match ConfigLoader::load_from_file(config_path) {
-        Ok((manifest, dag)) => {
-            println!("✓ Manifest '{}' is valid.", config_path.display());
-            println!(
-                "✓ Graph successfully built: {} nodes, {} edges across {} tasks.",
-                dag.node_count(),
-                dag.edge_count(),
-                manifest.tasks.len()
-            );
-        }
+        Ok((manifest, dag)) => match output {
+            OutputFormat::Github => {
+                println!(
+                        "::notice title=Onaji Check::Manifest '{}' and DAG ({} nodes, {} edges) are valid",
+                        config_path.display(),
+                        dag.node_count(),
+                        dag.edge_count()
+                    );
+            }
+            OutputFormat::Json => {
+                let json = serde_json::json!({
+                    "valid": true,
+                    "name": manifest.name,
+                    "nodes": dag.node_count(),
+                    "edges": dag.edge_count(),
+                    "tasks": manifest.tasks.len()
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            }
+            OutputFormat::Text => {
+                println!("✓ Manifest '{}' is valid.", config_path.display());
+                println!(
+                    "✓ Graph successfully built: {} nodes, {} edges across {} tasks.",
+                    dag.node_count(),
+                    dag.edge_count(),
+                    manifest.tasks.len()
+                );
+            }
+        },
         Err(err) => {
-            eprintln!("✗ Validation failed: {}", err);
-            std::process::exit(1);
+            match output {
+                OutputFormat::Github => {
+                    println!(
+                        "::error title=Onaji Check::Manifest or DAG is invalid: {}",
+                        err
+                    );
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "valid": false,
+                        "error": err.to_string(),
+                        "exit_code": 2
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    eprintln!("✗ Validation failed: {}", err);
+                }
+            }
+            std::process::exit(2);
         }
     }
 }
@@ -776,47 +1010,106 @@ fn handle_doctor(config_path: &Path) {
     }
 }
 
-fn handle_impact(config_path: &Path, resource_id_str: &str) {
+fn handle_impact(config_path: &Path, resource_id_str: &str, _ci: bool, output: OutputFormat) {
     let (_, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
         Err(err) => {
-            eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
-            std::process::exit(1);
+            match output {
+                OutputFormat::Github => {
+                    println!(
+                        "::error title=Onaji Manifest Error::Failed to load manifest '{}': {}",
+                        config_path.display(),
+                        err
+                    );
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to load manifest '{}': {}", config_path.display(), err),
+                        "exit_code": 2
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
+                }
+            }
+            std::process::exit(2);
         }
     };
 
     let res_id = ResourceId::new(resource_id_str);
     let analyzer = ImpactAnalyzer::new(&dag);
     match analyzer.analyze_resource_change(&res_id) {
-        Some(report) => {
-            println!(
-                "=== Impact Analysis for Resource: '{}' ===",
-                resource_id_str
-            );
-            println!("\nAffected Tasks ({}):", report.affected_tasks.len());
-            for (idx, task) in report.affected_tasks.iter().enumerate() {
-                println!("  {}. [Task: {}]", idx + 1, task);
+        Some(report) => match output {
+            OutputFormat::Github => {
+                println!(
+                    "::notice title=Onaji Impact::Resource '{}' impacts {} tasks and {} artifacts",
+                    resource_id_str,
+                    report.affected_tasks.len(),
+                    report.affected_artifacts.len()
+                );
+                for t in &report.affected_tasks {
+                    println!("::notice title=Affected Task::{}", t);
+                }
             }
+            OutputFormat::Json => {
+                let json = serde_json::json!({
+                    "resource": resource_id_str,
+                    "affected_tasks": report.affected_tasks.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                    "affected_artifacts": report.affected_artifacts.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+                    "unaffected_tasks": report.unaffected_tasks.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            }
+            OutputFormat::Text => {
+                println!(
+                    "=== Impact Analysis for Resource: '{}' ===",
+                    resource_id_str
+                );
+                println!("\nAffected Tasks ({}):", report.affected_tasks.len());
+                for (idx, task) in report.affected_tasks.iter().enumerate() {
+                    println!("  {}. [Task: {}]", idx + 1, task);
+                }
 
-            println!(
-                "\nAffected Artifacts ({}):",
-                report.affected_artifacts.len()
-            );
-            for art in &report.affected_artifacts {
-                println!("  • {}", art);
-            }
+                println!(
+                    "\nAffected Artifacts ({}):",
+                    report.affected_artifacts.len()
+                );
+                for art in &report.affected_artifacts {
+                    println!("  • {}", art);
+                }
 
-            println!("\nUnaffected Tasks ({}):", report.unaffected_tasks.len());
-            for task in &report.unaffected_tasks {
-                println!("  • [Task: {}]", task);
+                println!("\nUnaffected Tasks ({}):", report.unaffected_tasks.len());
+                for task in &report.unaffected_tasks {
+                    println!("  • [Task: {}]", task);
+                }
             }
-        }
+        },
         None => {
-            eprintln!(
-                "✗ Resource '{}' is not registered in the graph.",
-                resource_id_str
-            );
-            std::process::exit(1);
+            match output {
+                OutputFormat::Github => {
+                    println!(
+                        "::error title=Onaji Resource Error::Resource '{}' is not registered in the graph",
+                        resource_id_str
+                    );
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "success": false,
+                        "error": format!("Resource '{}' is not registered in the graph", resource_id_str),
+                        "exit_code": 3
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    eprintln!(
+                        "✗ Resource '{}' is not registered in the graph.",
+                        resource_id_str
+                    );
+                }
+            }
+            std::process::exit(3);
         }
     }
 }
