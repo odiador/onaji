@@ -48,6 +48,13 @@ impl DashboardServer {
                                 "application/json",
                                 r#"{"task_id":"compile_android","root_cause":"openapi_spec","trigger_type":"content_hash_change","cache_lookup":"miss","assigned_worker":"worker-android-02","duration_ms":8240}"#,
                             )
+                        } else if request_str.starts_with("GET /api/events") {
+                            let sse_payload = "event: task.started\r\ndata: {\"task_id\":\"validate_openapi\"}\r\n\r\nevent: task.completed\r\ndata: {\"task_id\":\"validate_openapi\",\"duration_ms\":42}\r\n\r\nevent: task.cached\r\ndata: {\"task_id\":\"generate_kotlin\"}\r\n\r\n";
+                            (
+                                "HTTP/1.1 200 OK",
+                                "text/event-stream; charset=utf-8",
+                                sse_payload,
+                            )
                         } else {
                             (
                                 "HTTP/1.1 200 OK",

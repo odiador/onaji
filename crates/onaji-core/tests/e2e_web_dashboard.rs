@@ -81,4 +81,23 @@ async fn test_web_dashboard_server_endpoints() {
 
     assert!(res_str4.contains(r#""task_id":"compile_android""#));
     assert!(res_str4.contains(r#""root_cause":"openapi_spec""#));
+
+    // 5. Test GET /api/events (SSE Stream)
+    let mut stream5 = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect to dashboard");
+    stream5
+        .write_all(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response5 = Vec::new();
+    stream5.read_to_end(&mut response5).await.unwrap();
+    let res_str5 = String::from_utf8_lossy(&response5);
+
+    assert!(res_str5.contains("HTTP/1.1 200 OK"));
+    assert!(res_str5.contains("text/event-stream"));
+    assert!(res_str5.contains("event: task.started"));
+    assert!(res_str5.contains("event: task.completed"));
+    assert!(res_str5.contains("event: task.cached"));
 }

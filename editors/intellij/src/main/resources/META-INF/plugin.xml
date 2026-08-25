@@ -1,0 +1,31 @@
+<idea-plugin>
+    <id>dev.odiador.onaji</id>
+    <name>ONΛJI — Semantic Automation &amp; DAG Engine</name>
+    <version>0.1.0</version>
+    <vendor email="support@onaji.dev" url="https://github.com/odiador/onaji">Onaji Team</vendor>
+
+    <description><![CDATA[
+    <b>ONΛJI:</b> Semantic Automation, Reactive DAG, and Distributed Task Cluster for Polyglot Workspaces.<br/>
+    Provides live graph visualization, distributed remote workers, multi-tier cache telemetry, and real-time causal task explanation inside IntelliJ IDEA and Android Studio.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="dev.odiador.onaji.OnajiStartupActivity"/>
+        <projectService serviceImplementation="dev.odiador.onaji.services.OnajiProjectService"/>
+        <toolWindow id="Onaji" anchor="right" factoryClass="dev.odiador.onaji.toolwindow.OnajiToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <group id="Onaji.Menu" text="ONΛJI" description="Onaji Semantic Automation">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="Onaji.RunPipeline" class="dev.odiador.onaji.actions.RunPipelineAction"
+                    text="Run Active Pipeline" description="Execute the Onaji DAG pipeline"/>
+            <action id="Onaji.ShowGraph" class="dev.odiador.onaji.actions.ShowGraphAction"
+                    text="Open DAG Visualizer" description="View the live interactive DAG graph"/>
+            <action id="Onaji.ExplainTask" class="dev.odiador.onaji.actions.ExplainTaskAction"
+                    text="Explain Task Cause" description="Inspect causal graph trace for task"/>
+        </group>
+    </actions>
+</idea-plugin>
