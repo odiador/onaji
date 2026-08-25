@@ -7,6 +7,7 @@ pub mod fingerprint;
 pub mod graph;
 pub mod http;
 pub mod plugin;
+pub mod remote;
 pub mod runner;
 pub mod scheduler;
 pub mod telemetry;
@@ -30,6 +31,7 @@ pub use plugin::{
     PluginManager, PluginManifest, PluginPermissions, PluginRuntime, SubprocessPluginAdapter,
     WasmPluginAdapter, WasmSecurityPolicy,
 };
+pub use remote::*;
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 pub use scheduler::{PipelineExecutionSummary, TaskScheduler};
 pub use telemetry::{
