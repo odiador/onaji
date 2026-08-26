@@ -3,6 +3,7 @@ use onaji_protocol::error::{ErrorCode, RpcError};
 use onaji_protocol::messages::{RpcRequest, RpcResponse};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 
 pub struct DaemonServer {
