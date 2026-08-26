@@ -1,0 +1,26 @@
+version: "1"
+name: "polyglot-example"
+
+resources:
+  openapi_spec:
+    type: file
+    path: "./backend/api/openapi.yaml"
+    debounce_ms: 200
+    description: "REST API Specification"
+
+artifacts:
+  validated_openapi:
+    description: "Validated contract schema"
+  kotlin_client_sdk:
+    description: "Generated Kotlin API client"
+
+tasks:
+  validate_openapi:
+    inputs: [openapi_spec]
+    outputs: [validated_openapi]
+    run: "echo '[onaji] Validating OpenAPI contract...'"
+
+  generate_kotlin_client:
+    inputs: [validated_openapi]
+    outputs: [kotlin_client_sdk]
+    run: "echo '[onaji] Generating Kotlin Client SDK from OpenAPI...'"

@@ -30,6 +30,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Interactive workspace onboarding, adapter discovery, doctor check, and scaffold
+    Onboard,
+
     /// Initialize a new onaji.yaml in the current workspace by auto-detecting project structure
     Init {
         #[arg(short, long, help = "Force overwrite if onaji.yaml already exists")]
@@ -323,6 +326,7 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Onboard => handle_onboard(&cli.config),
         Commands::Init { force } => handle_init(&cli.config, force),
         Commands::Watch { debounce } => handle_watch(&cli.config, debounce).await,
         Commands::Run {
@@ -1126,6 +1130,39 @@ fn handle_graph(config_path: &Path, format: GraphFormat) {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
     }
+}
+
+fn handle_onboard(config_path: &Path) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let target_manifest = workspace_root.join("onaji.yaml");
+
+    println!("================================================================================");
+    println!("             ONΛJI — Interactive Workspace Onboarding Guide                    ");
+    println!("================================================================================\n");
+
+    println!(
+        "🔍 Step 1: Inspecting workspace at: {}",
+        workspace_root.display()
+    );
+    if target_manifest.exists() {
+        println!("  ✓ Found existing configuration manifest: onaji.yaml");
+    } else {
+        println!("  ○ No onaji.yaml found. Generating starter configuration...");
+        handle_init(config_path, false);
+    }
+
+    println!("\n🩺 Step 2: Running Environment & Toolchain Diagnostics...");
+    handle_doctor(config_path);
+
+    println!("\n📐 Step 3: Checking Semantic DAG Integrity...");
+    handle_check(config_path, false, OutputFormat::Text);
+
+    println!("\n🎯 Step 4: Golden Path Workflow Commands:");
+    println!("  1. onaji check          — Validate semantic DAG and dependency integrity");
+    println!("  2. onaji run            — Execute DAG pipeline locally or with caching");
+    println!("  3. onaji dashboard      — Launch real-time visualizer at http://localhost:8080");
+    println!("  4. onaji watch          — Start reactive background watcher daemon");
+    println!("\n✨ Onboarding complete! You are ready to automate your polyglot workflows.\n");
 }
 
 fn handle_init(config_path: &Path, force: bool) {
