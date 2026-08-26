@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub mod graph;
 pub mod http;
 pub mod plugin;
+pub mod registry;
 pub mod release;
 pub mod remote;
 pub mod runner;
@@ -35,6 +36,7 @@ pub use plugin::{
     PluginManager, PluginManifest, PluginPermissions, PluginRuntime, SubprocessPluginAdapter,
     WasmPluginAdapter, WasmSecurityPolicy,
 };
+pub use registry::*;
 pub use release::*;
 pub use remote::*;
 pub use runner::{ProcessExecutor, RunnerError, TaskExecutionResult};

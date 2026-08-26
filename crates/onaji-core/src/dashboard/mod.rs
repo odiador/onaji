@@ -1,4 +1,4 @@
-pub mod server;
+mod server;
 pub mod ui;
 
 pub use server::DashboardServer;
