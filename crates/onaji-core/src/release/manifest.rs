@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSignature {
+    pub sig_type: String,
+    pub signature_hex: String,
+    pub public_key_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseArtifact {
     pub filename: String,
     pub os: String,
     pub arch: String,
     pub sha256: String,
     pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<ArtifactSignature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,7 +31,7 @@ impl ReleaseManifest {
         Self {
             version: version.into(),
             protocol_version: protocol_version.into(),
-            release_date: "2026-08-25T19:45:00Z".to_string(),
+            release_date: "2026-08-26T11:45:00Z".to_string(),
             artifacts: Vec::new(),
         }
     }

@@ -17,6 +17,7 @@ fn test_production_packaging_and_checksum_verification() {
         arch: "arm64".to_string(),
         sha256: darwin_sha.clone(),
         size_bytes: darwin_bytes.len() as u64,
+        signature: None,
     });
 
     manifest.add_artifact(ReleaseArtifact {
@@ -25,6 +26,7 @@ fn test_production_packaging_and_checksum_verification() {
         arch: "x86_64".to_string(),
         sha256: linux_sha.clone(),
         size_bytes: linux_bytes.len() as u64,
+        signature: None,
     });
 
     // 2. Validate JSON Serialization and Roundtrip

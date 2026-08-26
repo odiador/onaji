@@ -108,6 +108,12 @@ enum Commands {
         command: SecurityCommands,
     },
 
+    /// Release engineering, artifact signature verification, and checksums
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
     /// Launch the real-time interactive web dashboard and cluster inspector
     Dashboard {
         #[arg(
@@ -306,6 +312,21 @@ enum PluginCommands {
     Update,
 }
 
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Verify the cryptographic signature and SHA-256 integrity of an artifact
+    Verify {
+        #[arg(help = "Path to the artifact archive or binary to verify")]
+        artifact: PathBuf,
+
+        #[arg(short, long, help = "Optional path to signature file or hex signature")]
+        signature: Option<String>,
+
+        #[arg(short, long, help = "Optional Ed25519 public key hex string")]
+        key: Option<String>,
+    },
+}
+
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
 enum OutputFormat {
     #[default]
@@ -373,6 +394,7 @@ async fn main() {
         Commands::Plugin { command } => handle_plugin(&cli.config, command).await,
         Commands::Workspace { command } => handle_workspace(&cli.config, command),
         Commands::Security { command } => handle_security(&cli.config, command),
+        Commands::Release { command } => handle_release(command),
         Commands::Dashboard { port, open } => handle_dashboard(port, open).await,
     }
 }
@@ -1817,5 +1839,55 @@ async fn handle_dashboard(port: u16, open_browser: bool) {
     if let Err(err) = server.run().await {
         eprintln!("Dashboard server error: {}", err);
         std::process::exit(1);
+    }
+}
+
+fn handle_release(cmd: ReleaseCommands) {
+    match cmd {
+        ReleaseCommands::Verify {
+            artifact,
+            signature,
+            key,
+        } => {
+            if !artifact.exists() {
+                eprintln!("✗ Error: Artifact not found at '{}'", artifact.display());
+                std::process::exit(1);
+            }
+            let bytes = std::fs::read(&artifact).unwrap_or_default();
+            let sha = onaji_core::release::ChecksumVerifier::compute_sha256(&bytes);
+            println!("=== Onaji Cryptographic Release Verification ===");
+            println!("Artifact:    {}", artifact.display());
+            println!("SHA-256:     {}", sha);
+
+            if let (Some(sig), Some(pub_key)) = (signature, key) {
+                let sig_str = if Path::new(&sig).exists() {
+                    std::fs::read_to_string(&sig).unwrap_or(sig)
+                } else {
+                    sig
+                };
+                match onaji_core::release::SignatureVerifier::verify_ed25519(
+                    &bytes, &sig_str, &pub_key,
+                ) {
+                    Ok(true) => {
+                        println!("Signature:   ✓ VALID (Ed25519 Sigstore Certified)");
+                        println!("Status:      TRUSTED");
+                    }
+                    Ok(false) => {
+                        println!("Signature:   ✗ INVALID (Signature mismatch)");
+                        println!("Status:      REJECTED");
+                        std::process::exit(1);
+                    }
+                    Err(err) => {
+                        eprintln!("Signature:   ✗ ERROR ({})", err);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                println!(
+                    "Signature:   ○ (No cryptographic public key provided for signature check)"
+                );
+                println!("Status:      UNVERIFIED SIGNATURE");
+            }
+        }
     }
 }

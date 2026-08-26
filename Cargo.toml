@@ -34,3 +34,4 @@ async-trait = "0.1"
 tempfile = "3.10"
 wasmtime = "20.0"
 wat = "1.200"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }

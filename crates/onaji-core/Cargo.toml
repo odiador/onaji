@@ -23,6 +23,7 @@ hex = { workspace = true }
 async-trait = { workspace = true }
 wasmtime = { workspace = true }
 wat = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
