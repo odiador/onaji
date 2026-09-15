@@ -19,6 +19,7 @@ serde_yaml = "0.9"
 serde_json = "1.0"
 thiserror = "1.0"
 clap = { version = "4.5", features = ["derive", "cargo"] }
+clap_complete = "4.5"
 petgraph = "0.6"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tokio = { version = "1.38", features = ["full"] }

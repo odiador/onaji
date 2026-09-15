@@ -79,8 +79,14 @@
         "icon": "$(play)"
       },
       {
+        "command": "onaji.openVisualGraph",
+        "title": "Onaji: Open Interactive Causal Graph",
+        "category": "Onaji",
+        "icon": "$(type-hierarchy)"
+      },
+      {
         "command": "onaji.showGraph",
-        "title": "Onaji: Inspect Dependency Graph",
+        "title": "Onaji: Inspect Dependency Graph (JSON)",
         "category": "Onaji"
       },
       {
@@ -93,6 +99,11 @@
       "view/title": [
         {
           "command": "onaji.runPipeline",
+          "when": "view == onaji.tasksView",
+          "group": "navigation"
+        },
+        {
+          "command": "onaji.openVisualGraph",
           "when": "view == onaji.tasksView",
           "group": "navigation"
         },

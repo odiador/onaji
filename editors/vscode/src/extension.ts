@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { DaemonManager } from "./daemonManager";
 import { TasksTreeProvider, ResourcesTreeProvider } from "./treeProvider";
+import { GraphWebviewPanel } from "./graphWebview";
+import { OnajiCodeLensProvider } from "./codeLensProvider";
 
 let daemonManager: DaemonManager | null = null;
 
@@ -26,6 +28,14 @@ export async function activate(context: vscode.ExtensionContext) {
   statusBarItem.text = "$(sync~spin) Onaji: Connecting...";
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+
+  // Register CodeLens for onaji.yaml
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider(
+      { pattern: "**/onaji.yaml" },
+      new OnajiCodeLensProvider()
+    )
+  );
 
   async function syncState() {
     const client = daemonManager?.getClient();
@@ -90,6 +100,13 @@ export async function activate(context: vscode.ExtensionContext) {
         statusBarItem.text = "$(error) Onaji: Error";
         vscode.window.showErrorMessage(`Execution failed: ${err.message}`);
       }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("onaji.openVisualGraph", () => {
+      const client = daemonManager?.getClient() || null;
+      GraphWebviewPanel.createOrShow(context.extensionUri, client);
     })
   );
 
