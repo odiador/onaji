@@ -97,6 +97,7 @@ pub struct Task {
     pub action: Action,
     pub cache_paths: Vec<PathBuf>,
     pub priority: TaskPriority,
+    pub tags: Vec<String>,
 }
 
 impl Task {
@@ -114,6 +115,7 @@ impl Task {
             action,
             cache_paths: Vec::new(),
             priority: TaskPriority::Normal,
+            tags: Vec::new(),
         }
     }
 
@@ -125,5 +127,25 @@ impl Task {
     pub fn with_cache_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.cache_paths = paths;
         self
+    }
+
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    pub fn is_test(&self) -> bool {
+        self.tags.iter().any(|t| {
+            let lower = t.to_lowercase();
+            lower == "test"
+                || lower == "tests"
+                || lower == "check"
+                || lower == "typecheck"
+                || lower == "lint"
+                || lower == "contract"
+        }) || {
+            let id = self.id.as_str().to_lowercase();
+            id.contains("test") || id.contains("check") || id.contains("lint")
+        }
     }
 }

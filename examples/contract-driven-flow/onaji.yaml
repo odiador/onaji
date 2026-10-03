@@ -1,0 +1,72 @@
+version: "1"
+name: "contract-driven-flow"
+
+resources:
+  api_spec:
+    type: file
+    path: "openapi.yaml"
+    debounce_ms: 150
+    description: "OpenAPI 3.1 REST service contract"
+
+  client_src:
+    type: file
+    path: "src/client.ts"
+    debounce_ms: 200
+    description: "Frontend API client consumer implementation"
+
+  client_tests:
+    type: file
+    path: "src/client.test.ts"
+    debounce_ms: 200
+    description: "Contract and unit test suite"
+
+artifacts:
+  ts_declarations:
+    description: "Generated TypeScript contract declarations"
+    metadata:
+      path: "src/generated/api.d.ts"
+
+  compiled_bundle:
+    description: "Compiled JavaScript distribution bundle"
+    metadata:
+      path: "dist"
+
+tasks:
+  codegen:
+    description: "Compile OpenAPI contract into TypeScript definitions"
+    inputs:
+      - api_spec
+    outputs:
+      - ts_declarations
+    run: "./node_modules/.bin/openapi-typescript openapi.yaml -o src/generated/api.d.ts"
+    cache:
+      paths:
+        - "src/generated/api.d.ts"
+
+  typecheck:
+    description: "Validate TypeScript types against generated contract"
+    inputs:
+      - ts_declarations
+      - client_src
+      - client_tests
+    run: "./node_modules/.bin/tsc --noEmit"
+
+  build:
+    description: "Compile TypeScript to JavaScript"
+    inputs:
+      - ts_declarations
+      - client_src
+      - client_tests
+    outputs:
+      - compiled_bundle
+    run: "./node_modules/.bin/tsc"
+    cache:
+      paths:
+        - "dist"
+
+  test:
+    description: "Execute contract test suite against compiled bundle"
+    inputs:
+      - compiled_bundle
+    run: "node --test dist/client.test.js"
+    priority: "high"

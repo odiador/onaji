@@ -75,6 +75,8 @@ pub struct RawTask {
     pub cache: Option<RawTaskCache>,
     #[serde(default)]
     pub priority: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

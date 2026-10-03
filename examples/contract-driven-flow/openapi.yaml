@@ -1,0 +1,102 @@
+openapi: 3.1.0
+info:
+  title: Order Processing Service
+  version: 1.0.0
+  description: Contract for reactive ordering pipeline demonstration.
+paths:
+  /orders:
+    get:
+      summary: List all orders
+      operationId: listOrders
+      responses:
+        "200":
+          description: A list of customer orders.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+    post:
+      summary: Create an order
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Order created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+  /orders/{id}:
+    get:
+      summary: Get order by ID
+      operationId: getOrderById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          description: Order not found.
+components:
+  schemas:
+    Order:
+      type: object
+      required:
+        - id
+        - sku
+        - quantity
+        - total_cents
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        total_cents:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum:
+            - pending
+            - processing
+            - shipped
+            - delivered
+        created_at:
+          type: string
+          format: date-time
+    CreateOrderRequest:
+      type: object
+      required:
+        - sku
+        - quantity
+        - total_cents
+      properties:
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        total_cents:
+          type: integer
+          minimum: 0

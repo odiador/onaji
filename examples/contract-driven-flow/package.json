@@ -1,0 +1,16 @@
+{
+  "name": "contract-driven-flow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "openapi-typescript openapi.yaml -o src/generated/api.d.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/client.test.js"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.6.1",
+    "typescript": "^5.8.2",
+    "@types/node": "^22.13.9"
+  }
+}
