@@ -137,6 +137,9 @@ impl ConfigLoader {
                     _ => crate::domain::TaskPriority::Normal,
                 };
             }
+            if !raw_task.tags.is_empty() {
+                task = task.with_tags(raw_task.tags.clone());
+            }
 
             builder = builder.add_task(task);
         }

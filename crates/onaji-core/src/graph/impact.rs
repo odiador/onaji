@@ -81,3 +81,90 @@ impl<'a> ImpactAnalyzer<'a> {
         })
     }
 }
+
+impl ImpactReport {
+    /// Filters the impacted tasks to only those that are test/validation tasks
+    /// and their upstream causal prerequisites in the DAG, skipping unneeded branches.
+    pub fn filter_for_tests(&self, dag: &DependencyGraph) -> Self {
+        let test_tasks: Vec<TaskId> = self
+            .affected_tasks
+            .iter()
+            .filter(|tid| {
+                if let Some(t) = dag.get_task(tid) {
+                    t.is_test()
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if test_tasks.is_empty() {
+            let mut unaffected = self.unaffected_tasks.clone();
+            for tid in &self.affected_tasks {
+                if !unaffected.contains(tid) {
+                    unaffected.push(tid.clone());
+                }
+            }
+            unaffected.sort();
+
+            return Self {
+                root_resource: self.root_resource.clone(),
+                affected_tasks: Vec::new(),
+                affected_artifacts: Vec::new(),
+                unaffected_tasks: unaffected,
+            };
+        }
+
+        let mut required_node_indices = HashSet::new();
+        for test_task_id in &test_tasks {
+            if let Some(node_idx) = dag.task_indices.get(test_task_id) {
+                required_node_indices.insert(*node_idx);
+                let mut dfs =
+                    petgraph::visit::Dfs::new(&petgraph::visit::Reversed(&dag.graph), *node_idx);
+                while let Some(ancestor) = dfs.next(&petgraph::visit::Reversed(&dag.graph)) {
+                    required_node_indices.insert(ancestor);
+                }
+            }
+        }
+
+        let filtered_affected: Vec<TaskId> = self
+            .affected_tasks
+            .iter()
+            .filter(|tid| {
+                dag.task_indices
+                    .get(tid)
+                    .map(|idx| required_node_indices.contains(idx))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let filtered_artifacts: Vec<ArtifactId> = self
+            .affected_artifacts
+            .iter()
+            .filter(|aid| {
+                dag.artifact_indices
+                    .get(aid)
+                    .map(|idx| required_node_indices.contains(idx))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let mut unaffected = self.unaffected_tasks.clone();
+        for tid in &self.affected_tasks {
+            if !filtered_affected.contains(tid) && !unaffected.contains(tid) {
+                unaffected.push(tid.clone());
+            }
+        }
+        unaffected.sort();
+
+        Self {
+            root_resource: self.root_resource.clone(),
+            affected_tasks: filtered_affected,
+            affected_artifacts: filtered_artifacts,
+            unaffected_tasks: unaffected,
+        }
+    }
+}
