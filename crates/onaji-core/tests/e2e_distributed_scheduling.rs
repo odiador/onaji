@@ -33,6 +33,7 @@ fn test_distributed_scheduling_backpressure_and_priorities() {
         },
         cache_paths: Vec::new(),
         priority: TaskPriority::Low,
+        tags: Vec::new(),
     };
 
     let p_critical = Task {
@@ -47,6 +48,7 @@ fn test_distributed_scheduling_backpressure_and_priorities() {
         },
         cache_paths: Vec::new(),
         priority: TaskPriority::Critical,
+        tags: Vec::new(),
     };
 
     let p_high_android = Task {
@@ -61,6 +63,7 @@ fn test_distributed_scheduling_backpressure_and_priorities() {
         },
         cache_paths: Vec::new(),
         priority: TaskPriority::High,
+        tags: Vec::new(),
     };
 
     scheduler.add_task(p_low);
@@ -119,6 +122,7 @@ fn test_backpressure_strict_slot_limit_under_heavy_load() {
             },
             cache_paths: Vec::new(),
             priority: TaskPriority::Normal,
+            tags: Vec::new(),
         };
         scheduler.add_task(task);
     }
@@ -156,6 +160,7 @@ fn test_capability_aware_work_stealing_and_worker_loss_requeue() {
         },
         cache_paths: Vec::new(),
         priority: TaskPriority::Normal,
+        tags: Vec::new(),
     };
     scheduler.add_task(task_rust);
 

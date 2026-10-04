@@ -168,3 +168,81 @@ impl ImpactReport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Action, Artifact, InputNode, Resource, Task};
+    use crate::graph::builder::GraphBuilder;
+
+    #[test]
+    fn test_smart_test_filtering_causal_ancestors() {
+        // Pipeline:
+        // schema (resource) -> codegen (task) -> types (artifact)
+        // types -> typecheck (task tagged 'test')
+        // types -> deploy_docs (task, not test)
+        let res = Resource::new("schema", crate::domain::ResourceType::File {
+            path: std::path::PathBuf::from("schema.sql"),
+            debounce_ms: 100,
+        });
+        let art = Artifact::new("types");
+
+        let codegen = Task::new(
+            "codegen",
+            vec![InputNode::Resource(res.id.clone())],
+            vec![art.id.clone()],
+            Action::Command {
+                run: "echo codegen".into(),
+                working_dir: None,
+                env: Default::default(),
+            },
+        );
+
+        let typecheck = Task::new(
+            "typecheck",
+            vec![InputNode::Artifact(art.id.clone())],
+            vec![],
+            Action::Command {
+                run: "echo check".into(),
+                working_dir: None,
+                env: Default::default(),
+            },
+        )
+        .with_tags(vec!["test".into()]);
+
+        let deploy_docs = Task::new(
+            "deploy_docs",
+            vec![InputNode::Artifact(art.id.clone())],
+            vec![],
+            Action::Command {
+                run: "echo docs".into(),
+                working_dir: None,
+                env: Default::default(),
+            },
+        );
+
+        let dag = GraphBuilder::new()
+            .add_resource(res)
+            .add_artifact(art)
+            .add_task(codegen)
+            .add_task(typecheck)
+            .add_task(deploy_docs)
+            .build()
+            .expect("DAG build failed");
+
+        let analyzer = ImpactAnalyzer::new(&dag);
+        let raw_impact = analyzer
+            .analyze_resource_change(&ResourceId::new("schema"))
+            .expect("Impact analysis failed");
+
+        assert_eq!(raw_impact.affected_tasks.len(), 3);
+
+        let test_impact = raw_impact.filter_for_tests(&dag);
+        // Should keep codegen (upstream prerequisite) and typecheck (test), but drop deploy_docs
+        assert_eq!(test_impact.affected_tasks.len(), 2);
+        assert!(test_impact.affected_tasks.contains(&TaskId::new("codegen")));
+        assert!(test_impact.affected_tasks.contains(&TaskId::new("typecheck")));
+        assert!(!test_impact.affected_tasks.contains(&TaskId::new("deploy_docs")));
+        assert!(test_impact.unaffected_tasks.contains(&TaskId::new("deploy_docs")));
+    }
+}

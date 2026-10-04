@@ -48,6 +48,13 @@ enum Commands {
             help = "Debounce duration in milliseconds"
         )]
         debounce: u64,
+
+        #[arg(
+            short = 't',
+            long = "tests",
+            help = "Smart Test Selection: only execute tests and their causal prerequisites"
+        )]
+        tests: bool,
     },
 
     /// Run tasks or trigger a pipeline manually or in CI/CD environments
@@ -380,7 +387,7 @@ async fn main() {
     match cli.command {
         Commands::Onboard => handle_onboard(&cli.config),
         Commands::Init { force } => handle_init(&cli.config, force),
-        Commands::Watch { debounce } => handle_watch(&cli.config, debounce).await,
+        Commands::Watch { debounce, tests } => handle_watch(&cli.config, debounce, tests).await,
         Commands::Run {
             resource,
             ci,
@@ -623,7 +630,7 @@ fn resolve_workspace_root(config_path: &Path) -> PathBuf {
     }
 }
 
-async fn handle_watch(config_path: &Path, debounce_ms: u64) {
+async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool) {
     let workspace_root = resolve_workspace_root(config_path);
     let (manifest, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
@@ -646,8 +653,11 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64) {
     );
     println!("Resources:  {} registered", dag.resource_indices.len());
     println!("Tasks:      {} configured in DAG", dag.task_indices.len());
-    println!("Debounce:   {} ms\n", debounce_ms);
-    println!("Watching for changes... (Press Ctrl+C to stop)\n");
+    println!("Debounce:   {} ms", debounce_ms);
+    if tests_only {
+        println!("Mode:       🧪 Smart Test Selection (--tests enabled)");
+    }
+    println!("\nWatching for changes... (Press Ctrl+C to stop)\n");
 
     let watcher = ReactiveWatcher::new(&workspace_root);
     let mut rx = match watcher.start_watching(&dag, Duration::from_millis(debounce_ms)) {
@@ -673,12 +683,31 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64) {
         );
 
         let analyzer = ImpactAnalyzer::new(&dag);
-        if let Some(impact) = analyzer.analyze_resource_change(&event.resource_id) {
-            println!(
-                "🎯 [impact] {} affected tasks, {} unaffected",
-                impact.affected_tasks.len(),
-                impact.unaffected_tasks.len()
-            );
+        if let Some(raw_impact) = analyzer.analyze_resource_change(&event.resource_id) {
+            let impact = if tests_only {
+                raw_impact.filter_for_tests(&dag)
+            } else {
+                raw_impact
+            };
+
+            if tests_only {
+                println!(
+                    "🧪 [test-mode] {} causal test/prerequisite tasks selected, {} skipped",
+                    impact.affected_tasks.len(),
+                    impact.unaffected_tasks.len()
+                );
+            } else {
+                println!(
+                    "🎯 [impact] {} affected tasks, {} unaffected",
+                    impact.affected_tasks.len(),
+                    impact.unaffected_tasks.len()
+                );
+            }
+
+            if impact.affected_tasks.is_empty() {
+                println!("  ○ No test-related tasks impacted by this change.\n");
+                continue;
+            }
 
             let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
             match scheduler.execute_impact(&impact).await {
