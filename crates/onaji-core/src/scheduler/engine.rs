@@ -51,7 +51,25 @@ impl<'a> TaskScheduler<'a> {
         let mut blocked_tasks: HashSet<TaskId> = HashSet::new();
         let mut overall_success = true;
 
-        for task_id in task_ids {
+        let mut sorted_task_ids = task_ids.to_vec();
+        if let Ok(topo_order) = petgraph::algo::toposort(&self.dag.graph, None) {
+            let topo_rank: HashMap<petgraph::graph::NodeIndex, usize> = topo_order
+                .into_iter()
+                .enumerate()
+                .map(|(rank, idx)| (idx, rank))
+                .collect();
+
+            sorted_task_ids.sort_by_key(|t| {
+                self.dag
+                    .task_indices
+                    .get(t)
+                    .and_then(|idx| topo_rank.get(idx))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+        }
+
+        for task_id in &sorted_task_ids {
             let task = match self.dag.get_task(task_id) {
                 Some(t) => t,
                 None => continue,
