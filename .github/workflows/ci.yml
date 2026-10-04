@@ -29,3 +29,36 @@ jobs:
 
       - name: Cargo Test Suite
         run: cargo test --workspace --all-targets --all-features
+
+  selective-ci:
+    name: ONΛJI Selective Execution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Onaji CLI
+        run: cargo build -p onaji-cli
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: examples/contract-driven-flow/package-lock.json
+
+      - name: Install Example Dependencies
+        run: cd examples/contract-driven-flow && npm ci
+
+      - name: Run Affected Pipeline (CI Selective Check)
+        run: |
+          TARGET_REF="${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}"
+          echo "Evaluating changes against: $TARGET_REF"
+          ./target/debug/onaji --config examples/contract-driven-flow/onaji.yaml affected \
+            --since "$TARGET_REF" \
+            --run \
+            --output github
