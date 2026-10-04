@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use onaji_core::cache::{ExecutionCache, TaskState};
 use onaji_core::config::ConfigLoader;
 use onaji_core::domain::ResourceId;
-use onaji_core::graph::ImpactAnalyzer;
+use onaji_core::graph::{ImpactAnalyzer, ImpactReport};
 use onaji_core::scheduler::TaskScheduler;
 use onaji_core::watcher::ReactiveWatcher;
 use std::path::{Path, PathBuf};
@@ -93,8 +93,59 @@ enum Commands {
         #[arg(long, help = "Optional file path to output execution trace")]
         trace_output: Option<PathBuf>,
 
+        #[arg(
+            long,
+            help = "Execute only tasks affected by changes since a git reference (e.g. 'origin/main', 'HEAD~1')"
+        )]
+        since: Option<String>,
+
+        #[arg(
+            short = 't',
+            long = "tests",
+            help = "Filter execution to affected tests and their upstream causal prerequisites"
+        )]
+        tests: bool,
+
         #[arg(long, help = "Dispatch task execution to remote cluster workers")]
         remote: bool,
+    },
+
+    /// Analyze or execute tasks affected by git diff or uncommitted working directory changes
+    Affected {
+        #[arg(
+            long,
+            default_value = "origin/main",
+            help = "Git reference to compare against (e.g. 'origin/main', 'HEAD~1', 'main')"
+        )]
+        since: String,
+
+        #[arg(
+            long,
+            default_value = "true",
+            help = "Include uncommitted / staged working directory changes"
+        )]
+        uncommitted: bool,
+
+        #[arg(
+            short = 't',
+            long = "tests",
+            help = "Filter to affected tests and their upstream causal prerequisites"
+        )]
+        tests: bool,
+
+        #[arg(
+            long,
+            help = "Execute the affected tasks instead of only printing the impact report"
+        )]
+        run: bool,
+
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            help = "Output formatting: text, github, or json"
+        )]
+        output: OutputFormat,
     },
 
     /// Explain why a task was executed or cached using causal graph telemetry
@@ -396,11 +447,15 @@ async fn main() {
             trace,
             trace_format,
             trace_output,
+            since,
+            tests,
             remote,
         } => {
             handle_run(
                 &cli.config,
                 resource,
+                since,
+                tests,
                 ci,
                 output,
                 fail_fast,
@@ -410,6 +465,15 @@ async fn main() {
                 remote,
             )
             .await
+        }
+        Commands::Affected {
+            since,
+            uncommitted,
+            tests,
+            run,
+            output,
+        } => {
+            handle_affected(&cli.config, &since, uncommitted, tests, run, output).await
         }
         Commands::Explain { task } => handle_explain(&cli.config, &task),
         Commands::Worker { command } => handle_worker(&cli.config, command),
@@ -761,6 +825,8 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool) {
 async fn handle_run(
     config_path: &Path,
     resource_filter: Option<String>,
+    since_filter: Option<String>,
+    tests_filter: bool,
     _ci: bool,
     output: OutputFormat,
     _fail_fast: bool,
@@ -827,7 +893,13 @@ async fn handle_run(
         let res_id = ResourceId::new(res_str);
         let analyzer = ImpactAnalyzer::new(&dag);
         match analyzer.analyze_resource_change(&res_id) {
-            Some(report) => report.affected_tasks,
+            Some(report) => {
+                if tests_filter {
+                    report.filter_for_tests(&dag).affected_tasks
+                } else {
+                    report.affected_tasks
+                }
+            }
             None => {
                 match output {
                     OutputFormat::Github => {
@@ -851,9 +923,44 @@ async fn handle_run(
                 std::process::exit(3);
             }
         }
+    } else if let Some(since_ref) = since_filter {
+        let analyzer = ImpactAnalyzer::new(&dag);
+        let changed = match onaji_core::detect_git_changes(&workspace_root, &since_ref, true) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("✗ Git diff failed: {}", err);
+                std::process::exit(1);
+            }
+        };
+        let matched = analyzer.match_changed_files(&workspace_root, &changed);
+        let report = analyzer.analyze_multiple_resources(&matched);
+        if tests_filter {
+            report.filter_for_tests(&dag).affected_tasks
+        } else {
+            report.affected_tasks
+        }
+    } else if tests_filter {
+        let all_tasks: Vec<onaji_core::domain::TaskId> =
+            dag.task_indices.keys().cloned().collect();
+        let dummy_report = ImpactReport {
+            root_resource: ResourceId::new("workspace"),
+            affected_tasks: all_tasks,
+            affected_artifacts: Vec::new(),
+            unaffected_tasks: Vec::new(),
+        };
+        dummy_report.filter_for_tests(&dag).affected_tasks
     } else {
         dag.task_indices.keys().cloned().collect()
     };
+
+    if tasks_to_run.is_empty() {
+        if output == OutputFormat::Text {
+            println!("○ No matching tasks to execute. Everything is up to date.");
+        } else if output == OutputFormat::Json {
+            println!("{}", serde_json::json!({ "success": true, "tasks_executed": 0 }));
+        }
+        return;
+    }
 
     if output == OutputFormat::Github {
         println!(
@@ -1550,6 +1657,134 @@ fn handle_impact(config_path: &Path, resource_id_str: &str, _ci: bool, output: O
                 }
             }
             std::process::exit(3);
+        }
+    }
+}
+
+async fn handle_affected(
+    config_path: &Path,
+    since_ref: &str,
+    include_uncommitted: bool,
+    tests_only: bool,
+    execute_run: bool,
+    output: OutputFormat,
+) {
+    let workspace_root = resolve_workspace_root(config_path);
+    let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
+        Ok(res) => res,
+        Err(err) => {
+            eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
+            std::process::exit(2);
+        }
+    };
+
+    let changed_files =
+        match onaji_core::detect_git_changes(&workspace_root, since_ref, include_uncommitted) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("✗ Git diff failed: {}", err);
+                std::process::exit(1);
+            }
+        };
+
+    let analyzer = ImpactAnalyzer::new(&dag);
+    let matched_resources = analyzer.match_changed_files(&workspace_root, &changed_files);
+
+    let raw_report = analyzer.analyze_multiple_resources(&matched_resources);
+    let report = if tests_only {
+        raw_report.filter_for_tests(&dag)
+    } else {
+        raw_report
+    };
+
+    if !execute_run {
+        match output {
+            OutputFormat::Github => {
+                println!(
+                    "::notice title=Onaji Affected::{} resources, {} tasks affected since {}",
+                    matched_resources.len(),
+                    report.affected_tasks.len(),
+                    since_ref
+                );
+                for t in &report.affected_tasks {
+                    println!("::notice title=Affected Task::{}", t);
+                }
+            }
+            OutputFormat::Json => {
+                let json = serde_json::json!({
+                    "since": since_ref,
+                    "changed_files": changed_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "matched_resources": matched_resources.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+                    "affected_tasks": report.affected_tasks.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                    "affected_artifacts": report.affected_artifacts.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+                    "unaffected_tasks": report.unaffected_tasks.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            }
+            OutputFormat::Text => {
+                println!("=== Onaji Affected Analysis (since '{}') ===", since_ref);
+                println!("Changed files:     {}", changed_files.len());
+                println!("Matched resources: {}", matched_resources.len());
+                for r in &matched_resources {
+                    println!("  • {}", r);
+                }
+                println!("\nAffected Tasks ({}):", report.affected_tasks.len());
+                for (idx, task) in report.affected_tasks.iter().enumerate() {
+                    println!("  {}. [Task: {}]", idx + 1, task);
+                }
+                if !report.affected_artifacts.is_empty() {
+                    println!("\nAffected Artifacts ({}):", report.affected_artifacts.len());
+                    for art in &report.affected_artifacts {
+                        println!("  • {}", art);
+                    }
+                }
+                println!("\nUnaffected Tasks ({}):", report.unaffected_tasks.len());
+                for task in &report.unaffected_tasks {
+                    println!("  • [Task: {}]", task);
+                }
+            }
+        }
+        return;
+    }
+
+    if report.affected_tasks.is_empty() {
+        println!(
+            "○ No affected tasks to run since '{}'. Everything is up to date.",
+            since_ref
+        );
+        return;
+    }
+
+    println!(
+        "Running {} affected tasks (since '{}')...\n",
+        report.affected_tasks.len(),
+        since_ref
+    );
+    let mut cache = ExecutionCache::new();
+    let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
+    match scheduler.execute_tasks(&report.affected_tasks).await {
+        Ok(summary) => {
+            for res in &summary.results {
+                match res.state {
+                    TaskState::Success => {
+                        println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms)
+                    }
+                    TaskState::Cached => println!("  ⚡ {:<26}   cached", res.task_id),
+                    TaskState::Blocked => println!("  ○ {:<26}  blocked", res.task_id),
+                    TaskState::Failed => println!(
+                        "  ✗ {:<26}   failed (exit code: {:?})",
+                        res.task_id, res.exit_code
+                    ),
+                    _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                }
+            }
+            if !summary.success {
+                std::process::exit(1);
+            }
+        }
+        Err(err) => {
+            eprintln!("✗ Execution error: {}", err);
+            std::process::exit(1);
         }
     }
 }

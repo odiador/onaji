@@ -28,7 +28,10 @@ pub use daemon::{DaemonServer, Dispatcher};
 pub use dashboard::*;
 pub use domain::*;
 pub use fingerprint::{Fingerprint, Fingerprinter};
-pub use graph::{DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer, ImpactReport};
+pub use graph::{
+    detect_git_changes, DependencyGraph, GraphBuildError, GraphBuilder, ImpactAnalyzer,
+    ImpactReport,
+};
 pub use http::{
     ContentState, HttpPollOutcome, HttpPoller, HttpResourceState, ResourceAvailability,
 };

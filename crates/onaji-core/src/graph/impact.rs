@@ -1,7 +1,7 @@
 use super::dag::DependencyGraph;
 use crate::domain::{ArtifactId, ResourceId, TaskId};
 use petgraph::visit::Bfs;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImpactReport {
@@ -80,6 +80,204 @@ impl<'a> ImpactAnalyzer<'a> {
             unaffected_tasks,
         })
     }
+
+    /// Analyzes the cumulative impact of multiple changed resources, returning a merged ImpactReport.
+    pub fn analyze_multiple_resources(&self, resource_ids: &[ResourceId]) -> ImpactReport {
+        let mut affected_tasks_set = HashSet::new();
+        let mut affected_artifacts_set = HashSet::new();
+
+        for res_id in resource_ids {
+            if let Some(report) = self.analyze_resource_change(res_id) {
+                for t in report.affected_tasks {
+                    affected_tasks_set.insert(t);
+                }
+                for a in report.affected_artifacts {
+                    affected_artifacts_set.insert(a);
+                }
+            }
+        }
+
+        let mut affected_tasks: Vec<TaskId> = affected_tasks_set.into_iter().collect();
+        if let Ok(topo_order) = petgraph::algo::toposort(&self.dag.graph, None) {
+            let topo_rank: HashMap<petgraph::graph::NodeIndex, usize> = topo_order
+                .into_iter()
+                .enumerate()
+                .map(|(rank, idx)| (idx, rank))
+                .collect();
+
+            affected_tasks.sort_by_key(|t| {
+                self.dag
+                    .task_indices
+                    .get(t)
+                    .and_then(|idx| topo_rank.get(idx))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+        }
+
+        let mut unaffected_tasks: Vec<TaskId> = self
+            .dag
+            .task_indices
+            .keys()
+            .filter(|t| !affected_tasks.contains(t))
+            .cloned()
+            .collect();
+        unaffected_tasks.sort();
+
+        let mut affected_artifacts: Vec<ArtifactId> = affected_artifacts_set.into_iter().collect();
+        affected_artifacts.sort();
+
+        let root_res = if resource_ids.is_empty() {
+            ResourceId::new("none")
+        } else {
+            resource_ids[0].clone()
+        };
+
+        ImpactReport {
+            root_resource: root_res,
+            affected_tasks,
+            affected_artifacts,
+            unaffected_tasks,
+        }
+    }
+
+    /// Finds all registered resources whose file paths match any of the provided changed files.
+    pub fn match_changed_files(
+        &self,
+        workspace_root: &std::path::Path,
+        changed_files: &[std::path::PathBuf],
+    ) -> Vec<ResourceId> {
+        let mut matched = Vec::new();
+        let canonical_ws = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let git_root = find_git_root(&canonical_ws)
+            .and_then(|r| r.canonicalize().ok())
+            .unwrap_or_else(|| canonical_ws.clone());
+
+        for (res_id, _) in &self.dag.resource_indices {
+            if let Some(res) = self.dag.get_resource(res_id) {
+                if let crate::domain::ResourceType::File { path, .. } = &res.resource_type {
+                    let clean_res_path = path.strip_prefix("./").unwrap_or(path);
+                    let repo_res_path = if let Ok(rel_ws) = canonical_ws.strip_prefix(&git_root) {
+                        rel_ws.join(clean_res_path)
+                    } else {
+                        clean_res_path.to_path_buf()
+                    };
+
+                    for changed in changed_files {
+                        let clean_changed = changed.strip_prefix("./").unwrap_or(changed);
+
+                        if clean_changed == clean_res_path
+                            || clean_changed == repo_res_path
+                            || clean_changed.starts_with(&repo_res_path)
+                            || repo_res_path.starts_with(clean_changed)
+                            || clean_changed.starts_with(clean_res_path)
+                            || clean_res_path.starts_with(clean_changed)
+                        {
+                            if !matched.contains(res_id) {
+                                matched.push(res_id.clone());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        matched
+    }
+}
+
+/// Locates the top-level root of the enclosing git repository.
+pub fn find_git_root(start_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start_dir)
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(std::path::PathBuf::from(trimmed));
+        }
+    }
+    None
+}
+
+/// Discovers files modified between a git reference and current HEAD/working tree.
+pub fn detect_git_changes(
+    workspace_root: &std::path::Path,
+    since_ref: &str,
+    include_uncommitted: bool,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut files = HashSet::new();
+
+    // 1. Try git diff --name-only <since_ref>...HEAD
+    let mut diff_cmd = std::process::Command::new("git");
+    diff_cmd.args(["diff", "--name-only", &format!("{}...HEAD", since_ref)]);
+    diff_cmd.current_dir(workspace_root);
+
+    let output = match diff_cmd.output() {
+        Ok(out) if out.status.success() => out,
+        _ => {
+            let mut fb1 = std::process::Command::new("git");
+            fb1.args(["diff", "--name-only", since_ref]);
+            fb1.current_dir(workspace_root);
+            match fb1.output() {
+                Ok(out) if out.status.success() => out,
+                _ => {
+                    let mut fb2 = std::process::Command::new("git");
+                    fb2.args(["diff", "--name-only", "HEAD~1"]);
+                    fb2.current_dir(workspace_root);
+                    fb2.output().map_err(|e| format!("Failed to execute git: {}", e))?
+                }
+            }
+        }
+    };
+
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            files.insert(std::path::PathBuf::from(line));
+        }
+    }
+
+    if include_uncommitted {
+        let mut uncommitted_cmd = std::process::Command::new("git");
+        uncommitted_cmd.args(["diff", "--name-only", "HEAD"]);
+        uncommitted_cmd.current_dir(workspace_root);
+        if let Ok(out) = uncommitted_cmd.output() {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    files.insert(std::path::PathBuf::from(line));
+                }
+            }
+        }
+
+        let mut status_cmd = std::process::Command::new("git");
+        status_cmd.args(["status", "--porcelain"]);
+        status_cmd.current_dir(workspace_root);
+        if let Ok(out) = status_cmd.output() {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if line.len() > 3 {
+                        let path_str = line[3..].trim();
+                        if !path_str.is_empty() {
+                            files.insert(std::path::PathBuf::from(path_str));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<std::path::PathBuf> = files.into_iter().collect();
+    result.sort();
+    Ok(result)
 }
 
 impl ImpactReport {
@@ -244,5 +442,44 @@ mod tests {
         assert!(test_impact.affected_tasks.contains(&TaskId::new("typecheck")));
         assert!(!test_impact.affected_tasks.contains(&TaskId::new("deploy_docs")));
         assert!(test_impact.unaffected_tasks.contains(&TaskId::new("deploy_docs")));
+    }
+
+    #[test]
+    fn test_multiple_resources_and_path_matching() {
+        let r1 = Resource::new("api_spec", crate::domain::ResourceType::File {
+            path: std::path::PathBuf::from("openapi.yaml"),
+            debounce_ms: 100,
+        });
+        let r2 = Resource::new("client_code", crate::domain::ResourceType::File {
+            path: std::path::PathBuf::from("src/client.ts"),
+            debounce_ms: 100,
+        });
+        let t1 = Task::new("gen", vec![InputNode::Resource(r1.id.clone())], vec![], Action::Command {
+            run: "echo gen".into(),
+            working_dir: None,
+            env: Default::default(),
+        });
+        let t2 = Task::new("check", vec![InputNode::Resource(r2.id.clone())], vec![], Action::Command {
+            run: "echo check".into(),
+            working_dir: None,
+            env: Default::default(),
+        });
+
+        let dag = GraphBuilder::new()
+            .add_resource(r1)
+            .add_resource(r2)
+            .add_task(t1)
+            .add_task(t2)
+            .build()
+            .unwrap();
+
+        let analyzer = ImpactAnalyzer::new(&dag);
+        let changed = vec![std::path::PathBuf::from("openapi.yaml")];
+        let matched = analyzer.match_changed_files(std::path::Path::new("."), &changed);
+        assert_eq!(matched, vec![ResourceId::new("api_spec")]);
+
+        let report = analyzer.analyze_multiple_resources(&matched);
+        assert_eq!(report.affected_tasks, vec![TaskId::new("gen")]);
+        assert_eq!(report.unaffected_tasks, vec![TaskId::new("check")]);
     }
 }
