@@ -155,7 +155,7 @@ impl<'a> ImpactAnalyzer<'a> {
             .and_then(|r| r.canonicalize().ok())
             .unwrap_or_else(|| canonical_ws.clone());
 
-        for (res_id, _) in &self.dag.resource_indices {
+        for res_id in self.dag.resource_indices.keys() {
             if let Some(res) = self.dag.get_resource(res_id) {
                 if let crate::domain::ResourceType::File { path, .. } = &res.resource_type {
                     let clean_res_path = path.strip_prefix("./").unwrap_or(path);
@@ -231,7 +231,8 @@ pub fn detect_git_changes(
                     let mut fb2 = std::process::Command::new("git");
                     fb2.args(["diff", "--name-only", "HEAD~1"]);
                     fb2.current_dir(workspace_root);
-                    fb2.output().map_err(|e| format!("Failed to execute git: {}", e))?
+                    fb2.output()
+                        .map_err(|e| format!("Failed to execute git: {}", e))?
                 }
             }
         }
@@ -379,10 +380,13 @@ mod tests {
         // schema (resource) -> codegen (task) -> types (artifact)
         // types -> typecheck (task tagged 'test')
         // types -> deploy_docs (task, not test)
-        let res = Resource::new("schema", crate::domain::ResourceType::File {
-            path: std::path::PathBuf::from("schema.sql"),
-            debounce_ms: 100,
-        });
+        let res = Resource::new(
+            "schema",
+            crate::domain::ResourceType::File {
+                path: std::path::PathBuf::from("schema.sql"),
+                debounce_ms: 100,
+            },
+        );
         let art = Artifact::new("types");
 
         let codegen = Task::new(
@@ -439,31 +443,53 @@ mod tests {
         // Should keep codegen (upstream prerequisite) and typecheck (test), but drop deploy_docs
         assert_eq!(test_impact.affected_tasks.len(), 2);
         assert!(test_impact.affected_tasks.contains(&TaskId::new("codegen")));
-        assert!(test_impact.affected_tasks.contains(&TaskId::new("typecheck")));
-        assert!(!test_impact.affected_tasks.contains(&TaskId::new("deploy_docs")));
-        assert!(test_impact.unaffected_tasks.contains(&TaskId::new("deploy_docs")));
+        assert!(test_impact
+            .affected_tasks
+            .contains(&TaskId::new("typecheck")));
+        assert!(!test_impact
+            .affected_tasks
+            .contains(&TaskId::new("deploy_docs")));
+        assert!(test_impact
+            .unaffected_tasks
+            .contains(&TaskId::new("deploy_docs")));
     }
 
     #[test]
     fn test_multiple_resources_and_path_matching() {
-        let r1 = Resource::new("api_spec", crate::domain::ResourceType::File {
-            path: std::path::PathBuf::from("openapi.yaml"),
-            debounce_ms: 100,
-        });
-        let r2 = Resource::new("client_code", crate::domain::ResourceType::File {
-            path: std::path::PathBuf::from("src/client.ts"),
-            debounce_ms: 100,
-        });
-        let t1 = Task::new("gen", vec![InputNode::Resource(r1.id.clone())], vec![], Action::Command {
-            run: "echo gen".into(),
-            working_dir: None,
-            env: Default::default(),
-        });
-        let t2 = Task::new("check", vec![InputNode::Resource(r2.id.clone())], vec![], Action::Command {
-            run: "echo check".into(),
-            working_dir: None,
-            env: Default::default(),
-        });
+        let r1 = Resource::new(
+            "api_spec",
+            crate::domain::ResourceType::File {
+                path: std::path::PathBuf::from("openapi.yaml"),
+                debounce_ms: 100,
+            },
+        );
+        let r2 = Resource::new(
+            "client_code",
+            crate::domain::ResourceType::File {
+                path: std::path::PathBuf::from("src/client.ts"),
+                debounce_ms: 100,
+            },
+        );
+        let t1 = Task::new(
+            "gen",
+            vec![InputNode::Resource(r1.id.clone())],
+            vec![],
+            Action::Command {
+                run: "echo gen".into(),
+                working_dir: None,
+                env: Default::default(),
+            },
+        );
+        let t2 = Task::new(
+            "check",
+            vec![InputNode::Resource(r2.id.clone())],
+            vec![],
+            Action::Command {
+                run: "echo check".into(),
+                working_dir: None,
+                env: Default::default(),
+            },
+        );
 
         let dag = GraphBuilder::new()
             .add_resource(r1)

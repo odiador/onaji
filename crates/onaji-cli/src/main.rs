@@ -472,9 +472,7 @@ async fn main() {
             tests,
             run,
             output,
-        } => {
-            handle_affected(&cli.config, &since, uncommitted, tests, run, output).await
-        }
+        } => handle_affected(&cli.config, &since, uncommitted, tests, run, output).await,
         Commands::Explain { task } => handle_explain(&cli.config, &task),
         Commands::Worker { command } => handle_worker(&cli.config, command),
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
@@ -732,9 +730,20 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool) {
         }
     };
 
-    let mut cache = ExecutionCache::new();
+    let dag = std::sync::Arc::new(dag);
+    let workspace_root = std::sync::Arc::new(workspace_root);
+    let cache = std::sync::Arc::new(tokio::sync::Mutex::new(ExecutionCache::new()));
+    let mut active_run: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(event) = rx.recv().await {
+        if let Some(handle) = active_run.take() {
+            if !handle.is_finished() {
+                println!("⚡ [watch] In-flight pipeline preempted — aborting prior tasks...");
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+
         println!("---------------------------------------------------------------");
         println!(
             "⚡ [watch] Resource '{}' {:?} (payload hash: {})",
@@ -773,50 +782,57 @@ async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool) {
                 continue;
             }
 
-            let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
-            match scheduler.execute_impact(&impact).await {
-                Ok(summary) => {
-                    println!("\nExecution Plan:");
-                    for res in summary.results {
-                        match res.state {
-                            TaskState::Success => {
-                                println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms);
-                            }
-                            TaskState::Cached => {
-                                println!("  ⚡ {:<26}   cached", res.task_id);
-                            }
-                            TaskState::Blocked => {
-                                println!("  ○ {:<26}  blocked", res.task_id);
-                            }
-                            TaskState::Failed => {
-                                println!(
-                                    "  ✗ {:<26}   failed (exit code: {:?})",
-                                    res.task_id, res.exit_code
-                                );
-                                if !res.stderr.is_empty() {
-                                    for line in res.stderr.lines() {
-                                        println!("      | {}", line);
+            let task_dag = std::sync::Arc::clone(&dag);
+            let task_root = std::sync::Arc::clone(&workspace_root);
+            let task_cache = std::sync::Arc::clone(&cache);
+
+            active_run = Some(tokio::spawn(async move {
+                let mut cache_guard = task_cache.lock().await;
+                let mut scheduler = TaskScheduler::new(&task_dag, &*task_root, &mut cache_guard);
+                match scheduler.execute_impact(&impact).await {
+                    Ok(summary) => {
+                        println!("\nExecution Plan:");
+                        for res in summary.results {
+                            match res.state {
+                                TaskState::Success => {
+                                    println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms);
+                                }
+                                TaskState::Cached => {
+                                    println!("  ⚡ {:<26}   cached", res.task_id);
+                                }
+                                TaskState::Blocked => {
+                                    println!("  ○ {:<26}  blocked", res.task_id);
+                                }
+                                TaskState::Failed => {
+                                    println!(
+                                        "  ✗ {:<26}   failed (exit code: {:?})",
+                                        res.task_id, res.exit_code
+                                    );
+                                    if !res.stderr.is_empty() {
+                                        for line in res.stderr.lines() {
+                                            println!("      | {}", line);
+                                        }
                                     }
                                 }
-                            }
-                            _ => {
-                                println!("  ? {:<26}  {:?}", res.task_id, res.state);
+                                _ => {
+                                    println!("  ? {:<26}  {:?}", res.task_id, res.state);
+                                }
                             }
                         }
+                        for unaffected in &impact.unaffected_tasks {
+                            println!("  ○ {:<26}  skipped (unaffected)", unaffected);
+                        }
+                        println!(
+                            "\nTotal Time: {} ms | Status: {}\n",
+                            summary.total_duration_ms,
+                            if summary.success { "PASSED" } else { "FAILED" }
+                        );
                     }
-                    for unaffected in &impact.unaffected_tasks {
-                        println!("  ○ {:<26}  skipped (unaffected)", unaffected);
+                    Err(err) => {
+                        eprintln!("✗ Execution error: {}", err);
                     }
-                    println!(
-                        "\nTotal Time: {} ms | Status: {}\n",
-                        summary.total_duration_ms,
-                        if summary.success { "PASSED" } else { "FAILED" }
-                    );
                 }
-                Err(err) => {
-                    eprintln!("✗ Execution error: {}", err);
-                }
-            }
+            }));
         }
     }
 }
@@ -940,8 +956,7 @@ async fn handle_run(
             report.affected_tasks
         }
     } else if tests_filter {
-        let all_tasks: Vec<onaji_core::domain::TaskId> =
-            dag.task_indices.keys().cloned().collect();
+        let all_tasks: Vec<onaji_core::domain::TaskId> = dag.task_indices.keys().cloned().collect();
         let dummy_report = ImpactReport {
             root_resource: ResourceId::new("workspace"),
             affected_tasks: all_tasks,
@@ -957,7 +972,10 @@ async fn handle_run(
         if output == OutputFormat::Text {
             println!("○ No matching tasks to execute. Everything is up to date.");
         } else if output == OutputFormat::Json {
-            println!("{}", serde_json::json!({ "success": true, "tasks_executed": 0 }));
+            println!(
+                "{}",
+                serde_json::json!({ "success": true, "tasks_executed": 0 })
+            );
         }
         return;
     }
@@ -1733,7 +1751,10 @@ async fn handle_affected(
                     println!("  {}. [Task: {}]", idx + 1, task);
                 }
                 if !report.affected_artifacts.is_empty() {
-                    println!("\nAffected Artifacts ({}):", report.affected_artifacts.len());
+                    println!(
+                        "\nAffected Artifacts ({}):",
+                        report.affected_artifacts.len()
+                    );
                     for art in &report.affected_artifacts {
                         println!("  • {}", art);
                     }

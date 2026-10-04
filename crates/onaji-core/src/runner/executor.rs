@@ -58,6 +58,7 @@ impl ProcessExecutor {
                 };
 
                 cmd.current_dir(cwd);
+                cmd.kill_on_drop(true);
                 for (k, v) in env {
                     cmd.env(k, v);
                 }
