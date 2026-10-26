@@ -104,3 +104,36 @@ async fn test_remote_cluster_coordinator_and_capability_scheduling() {
     let unavailable_worker = coordinator.find_compatible_worker(Some("ios_sdk_unregistered"));
     assert!(unavailable_worker.is_none());
 }
+
+#[test]
+fn test_remote_worker_container_execution() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let worker = WorkerDaemon::new(
+        "worker-container-test",
+        temp_dir.path(),
+        HashMap::from([("container".to_string(), "oci".to_string())]),
+    );
+
+    std::env::set_var("ONAJI_CONTAINER_ENGINE", "echo");
+    let assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "container_task".to_string(),
+        workspace_id: "ws-main".to_string(),
+        action_cmd: "uname -a".to_string(),
+        env: HashMap::from([
+            (
+                "ONAJI_CONTAINER_IMAGE".to_string(),
+                "rust:1.80-alpine".to_string(),
+            ),
+            ("CI_BUILD_ID".to_string(), "42".to_string()),
+        ]),
+        cache_key: "abcdef123456".to_string(),
+        timeout_ms: 30000,
+    };
+
+    let report = worker.execute_assignment(&assignment);
+    assert!(report.success);
+    assert_eq!(report.exit_code, Some(0));
+    assert!(report.stdout.contains("run --rm -i -v"));
+    assert!(report.stdout.contains("rust:1.80-alpine"));
+    assert!(report.stdout.contains("uname -a"));
+}

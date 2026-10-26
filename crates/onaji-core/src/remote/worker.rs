@@ -33,20 +33,46 @@ impl WorkerDaemon {
         let start = Instant::now();
         std::fs::create_dir_all(&self.sandbox_root).ok();
 
-        #[cfg(unix)]
-        let mut cmd = Command::new("sh");
-        #[cfg(unix)]
-        cmd.arg("-c").arg(&assignment.action_cmd);
+        let mut cmd = if let Some(image) = assignment.env.get("ONAJI_CONTAINER_IMAGE") {
+            let engine =
+                std::env::var("ONAJI_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string());
+            let mut c = Command::new(&engine);
+            c.arg("run")
+                .arg("--rm")
+                .arg("-i")
+                .arg("-v")
+                .arg(format!("{}:/workspace", self.sandbox_root.display()))
+                .arg("-w")
+                .arg("/workspace");
+            for (k, v) in &assignment.env {
+                if k != "ONAJI_CONTAINER_IMAGE" {
+                    c.arg("-e").arg(format!("{}={}", k, v));
+                }
+            }
+            c.arg(image);
+            c.arg("sh").arg("-c").arg(&assignment.action_cmd);
+            c
+        } else {
+            #[cfg(unix)]
+            let mut c = {
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c").arg(&assignment.action_cmd);
+                cmd
+            };
 
-        #[cfg(windows)]
-        let mut cmd = Command::new("cmd");
-        #[cfg(windows)]
-        cmd.arg("/C").arg(&assignment.action_cmd);
+            #[cfg(windows)]
+            let mut c = {
+                let mut cmd = Command::new("cmd");
+                cmd.arg("/C").arg(&assignment.action_cmd);
+                cmd
+            };
 
-        cmd.current_dir(&self.sandbox_root);
-        for (k, v) in &assignment.env {
-            cmd.env(k, v);
-        }
+            c.current_dir(&self.sandbox_root);
+            for (k, v) in &assignment.env {
+                c.env(k, v);
+            }
+            c
+        };
 
         match cmd.output() {
             Ok(output) => {
