@@ -1,6 +1,8 @@
 use onaji_core::cache::{CacheKey, ExecutionCache};
 use onaji_core::daemon::Dispatcher;
-use onaji_core::domain::{Action, Artifact, ArtifactId, InputNode, Resource, ResourceId, ResourceType, Task, TaskId};
+use onaji_core::domain::{
+    Action, Artifact, ArtifactId, InputNode, Resource, ResourceId, ResourceType, Task, TaskId,
+};
 use onaji_core::fingerprint::{Fingerprint, Fingerprinter};
 use onaji_core::graph::GraphBuilder;
 use onaji_protocol::RpcRequest;
@@ -31,7 +33,10 @@ async fn run_architecture_and_performance_benchmark() {
             let inputs = if i == 0 {
                 vec![InputNode::Resource(ResourceId::new("root_spec"))]
             } else {
-                vec![InputNode::Artifact(ArtifactId::new(format!("artifact_{}", i - 1)))]
+                vec![InputNode::Artifact(ArtifactId::new(format!(
+                    "artifact_{}",
+                    i - 1
+                )))]
             };
             let outputs = vec![ArtifactId::new(format!("artifact_{i}"))];
             let task = Task::new(
@@ -64,7 +69,10 @@ async fn run_architecture_and_performance_benchmark() {
         let dummy_root = PathBuf::from(".");
         let mut dummy_fps = HashMap::new();
         for i in 0..10 {
-            dummy_fps.insert(format!("input_{i}"), Fingerprint::new(0x1234567890abcdef ^ i));
+            dummy_fps.insert(
+                format!("input_{i}"),
+                Fingerprint::new(0x1234567890abcdef ^ i),
+            );
         }
         let task = Task::new(
             TaskId::new("benchmark_task"),
@@ -89,7 +97,10 @@ async fn run_architecture_and_performance_benchmark() {
         println!("    - Iterations              : {}", iterations);
         println!("    - Total time              : {:?}", duration);
         println!("    - Ops / Second            : {:.0} ops/sec", ops_per_sec);
-        println!("    - Mean latency per key    : {:.2} µs", duration.as_micros() as f64 / iterations as f64);
+        println!(
+            "    - Mean latency per key    : {:.2} µs",
+            duration.as_micros() as f64 / iterations as f64
+        );
     }
 
     // 3. Benchmark: In-Memory ExecutionCache Operations (Lookup & Invalidation)
@@ -112,7 +123,10 @@ async fn run_architecture_and_performance_benchmark() {
         println!("    - Iterations              : {}", iterations);
         println!("    - Total time              : {:?}", duration);
         println!("    - Ops / Second            : {:.0} ops/sec", ops_per_sec);
-        println!("    - Mean lookup latency     : {:.3} µs", duration.as_micros() as f64 / iterations as f64);
+        println!(
+            "    - Mean lookup latency     : {:.3} µs",
+            duration.as_micros() as f64 / iterations as f64
+        );
     }
 
     // 4. Benchmark: JSON-RPC Dispatcher Handling
@@ -139,7 +153,10 @@ async fn run_architecture_and_performance_benchmark() {
         println!("    - Iterations              : {}", iterations);
         println!("    - Total time              : {:?}", duration);
         println!("    - Ops / Second            : {:.0} ops/sec", ops_per_sec);
-        println!("    - Mean dispatch latency   : {:.2} µs", duration.as_micros() as f64 / iterations as f64);
+        println!(
+            "    - Mean dispatch latency   : {:.2} µs",
+            duration.as_micros() as f64 / iterations as f64
+        );
     }
 
     // 5. Benchmark: xxHash3 Memory Hashing vs File I/O
@@ -157,7 +174,11 @@ async fn run_architecture_and_performance_benchmark() {
         println!("\n[5] Content Hashing Speed (xxHash3 on 1MB payloads):");
         println!("    - Processed               : {:.0} MB", mb_processed);
         println!("    - Total time              : {:?}", duration);
-        println!("    - Throughput              : {:.2} MB/s ({:.2} GB/s)", throughput_mb, throughput_mb / 1024.0);
+        println!(
+            "    - Throughput              : {:.2} MB/s ({:.2} GB/s)",
+            throughput_mb,
+            throughput_mb / 1024.0
+        );
     }
 
     println!("\n========================================================\n");

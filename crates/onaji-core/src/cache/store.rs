@@ -82,4 +82,37 @@ impl ExecutionCache {
     pub fn clear(&mut self) {
         self.records.clear();
     }
+
+    /// Ruta predeterminada para el almacenamiento de caché CAS local del workspace (.onaji/cache/execution_cache.json)
+    pub fn default_cache_path(workspace_root: &std::path::Path) -> std::path::PathBuf {
+        workspace_root
+            .join(".onaji")
+            .join("cache")
+            .join("execution_cache.json")
+    }
+
+    /// Carga la caché desde el disco si existe, o retorna una nueva instancia vacía.
+    pub fn load_or_new(workspace_root: &std::path::Path) -> Self {
+        let path = Self::default_cache_path(workspace_root);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(cache) = serde_json::from_str(&content) {
+                    return cache;
+                }
+            }
+        }
+        Self::new()
+    }
+
+    /// Persiste el estado de la caché en el disco de forma atómica.
+    pub fn save(&self, workspace_root: &std::path::Path) -> std::io::Result<()> {
+        let path = Self::default_cache_path(workspace_root);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content =
+            serde_json::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
 }

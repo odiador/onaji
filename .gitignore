@@ -11,3 +11,4 @@ Cargo.lock
 **/.gradle/
 .codegraph/
 graphify-out/
+.onaji/

@@ -70,9 +70,20 @@ impl ProcessExecutor {
 
                 // 2. Bloqueo de comandos destructivos del sistema
                 let trimmed = run.trim();
-                let dangerous_patterns = ["rm -rf /", "sudo ", "shutdown ", "reboot ", "mkfs ", ":(){ :|:& };:"];
+                let dangerous_patterns = [
+                    "rm -rf /",
+                    "sudo ",
+                    "shutdown ",
+                    "reboot ",
+                    "mkfs ",
+                    ":(){ :|:& };:",
+                ];
                 for pattern in dangerous_patterns {
-                    if trimmed == pattern || trimmed.starts_with(&format!("{pattern} ")) || trimmed.contains(&format!(" {pattern}")) || trimmed.contains(&format!(";{pattern}")) {
+                    if trimmed == pattern
+                        || trimmed.starts_with(&format!("{pattern} "))
+                        || trimmed.contains(&format!(" {pattern}"))
+                        || trimmed.contains(&format!(";{pattern}"))
+                    {
                         return Err(RunnerError::ExecutionFailed {
                             code: Some(126),
                             stderr: format!("Security violation: forbidden destructive command pattern '{pattern}' detected"),

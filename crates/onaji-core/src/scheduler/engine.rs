@@ -200,15 +200,17 @@ impl<'a> TaskScheduler<'a> {
                 }
 
                 while let Some(join_res) = join_set.join_next().await {
-                    let (task, exec_res) = join_res.map_err(|e| {
-                        RunnerError::Io(std::io::Error::other(e.to_string()))
-                    })?;
+                    let (task, exec_res) = join_res
+                        .map_err(|e| RunnerError::Io(std::io::Error::other(e.to_string())))?;
                     let exec_result = exec_res?;
 
                     if exec_result.state == TaskState::Success {
                         if let Some(key) = &exec_result.cache_key {
-                            self.cache
-                                .record_success(&task.id, key.clone(), exec_result.duration_ms);
+                            self.cache.record_success(
+                                &task.id,
+                                key.clone(),
+                                exec_result.duration_ms,
+                            );
 
                             for out_art in &task.outputs {
                                 artifact_fingerprints.insert(
@@ -223,7 +225,9 @@ impl<'a> TaskScheduler<'a> {
 
                         // Bloquear tareas restantes en oleadas posteriores
                         for remaining_id in &sorted_task_ids {
-                            if remaining_id != &task.id && !executed_results.contains_key(remaining_id) {
+                            if remaining_id != &task.id
+                                && !executed_results.contains_key(remaining_id)
+                            {
                                 blocked_tasks.insert(remaining_id.clone());
                             }
                         }

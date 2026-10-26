@@ -902,7 +902,7 @@ async fn handle_run(
         None
     };
 
-    let mut cache = ExecutionCache::new();
+    let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
 
     let tasks_to_run: Vec<onaji_core::domain::TaskId> = if let Some(res_str) = resource_filter {
@@ -1125,6 +1125,7 @@ async fn handle_run(
                 }
             }
 
+            let _ = cache.save(&workspace_root);
             if !summary.success {
                 std::process::exit(1);
             }
@@ -1781,7 +1782,7 @@ async fn handle_affected(
         report.affected_tasks.len(),
         since_ref
     );
-    let mut cache = ExecutionCache::new();
+    let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
     match scheduler.execute_tasks(&report.affected_tasks).await {
         Ok(summary) => {
@@ -1799,6 +1800,7 @@ async fn handle_affected(
                     _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
                 }
             }
+            let _ = cache.save(&workspace_root);
             if !summary.success {
                 std::process::exit(1);
             }
