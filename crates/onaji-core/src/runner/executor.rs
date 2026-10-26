@@ -42,10 +42,43 @@ impl ProcessExecutor {
                 working_dir,
                 env,
             } => {
+                // 1. Validar y confinar working_dir contra path traversal
                 let cwd = match working_dir {
-                    Some(rel) => workspace_root.join(rel),
+                    Some(rel) => {
+                        let candidate = if rel.is_absolute() {
+                            rel.to_path_buf()
+                        } else {
+                            workspace_root.join(rel)
+                        };
+                        if let (Ok(canon_cwd), Ok(canon_root)) =
+                            (candidate.canonicalize(), workspace_root.canonicalize())
+                        {
+                            if !canon_cwd.starts_with(&canon_root) {
+                                return Err(RunnerError::ExecutionFailed {
+                                    code: Some(126),
+                                    stderr: format!(
+                                        "Security violation: path traversal detected outside workspace root for '{}'",
+                                        rel.display()
+                                    ),
+                                });
+                            }
+                        }
+                        candidate
+                    }
                     None => workspace_root.to_path_buf(),
                 };
+
+                // 2. Bloqueo de comandos destructivos del sistema
+                let trimmed = run.trim();
+                let dangerous_patterns = ["rm -rf /", "sudo ", "shutdown ", "reboot ", "mkfs ", ":(){ :|:& };:"];
+                for pattern in dangerous_patterns {
+                    if trimmed == pattern || trimmed.starts_with(&format!("{pattern} ")) || trimmed.contains(&format!(" {pattern}")) || trimmed.contains(&format!(";{pattern}")) {
+                        return Err(RunnerError::ExecutionFailed {
+                            code: Some(126),
+                            stderr: format!("Security violation: forbidden destructive command pattern '{pattern}' detected"),
+                        });
+                    }
+                }
 
                 let mut cmd = if cfg!(target_os = "windows") {
                     let mut c = Command::new("cmd");

@@ -1,5 +1,5 @@
 use crate::domain::{Action, Task};
-use crate::fingerprint::Fingerprint;
+use crate::fingerprint::{Fingerprint, Fingerprinter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -91,9 +91,10 @@ impl CacheKey {
         for cache_rel_path in &task.cache_paths {
             let full_path = workspace_root.join(cache_rel_path);
             if full_path.exists() {
-                if let Ok(content) = std::fs::read(&full_path) {
-                    hasher.update(cache_rel_path.to_string_lossy().as_bytes());
-                    hasher.update(Sha256::digest(&content));
+                if let Ok(fp) = Fingerprinter::compute_path(&full_path) {
+                    let normalized_rel = cache_rel_path.to_string_lossy().replace('\\', "/");
+                    hasher.update(normalized_rel.as_bytes());
+                    hasher.update(fp.0.to_le_bytes());
                 }
             }
         }
