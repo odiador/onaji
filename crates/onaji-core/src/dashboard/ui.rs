@@ -119,6 +119,12 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         <span>Monitored Resources</span>
         <span id="resources-count">-</span>
       </div>
+      <div style="margin-top:16px;">
+        <button id="btn-prune-cas" onclick="pruneCas()" style="width:100%;padding:8px 12px;background:rgba(239, 68, 68, 0.15);border:1px solid rgba(239, 68, 68, 0.4);color:#fca5a5;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all 0.2s ease;">
+          🧹 Prune CAS Storage (&lt; 500MB)
+        </button>
+        <div id="prune-feedback" style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:6px;min-height:16px;"></div>
+      </div>
     </div>
   </div>
 
@@ -207,6 +213,31 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     }
     updateDashboard();
     setInterval(updateDashboard, 5000);
+
+    async function pruneCas() {
+      const btn = document.getElementById('btn-prune-cas');
+      const feedback = document.getElementById('prune-feedback');
+      btn.disabled = true;
+      btn.innerText = 'Pruning...';
+      try {
+        const res = await fetch('/api/clean?max_size=500MB', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          feedback.style.color = 'var(--success)';
+          feedback.innerText = `Pruned ${data.evicted_packages_count} packages (${formatBytes(data.freed_bytes)} freed)`;
+          updateDashboard();
+        } else {
+          feedback.style.color = 'var(--failed)';
+          feedback.innerText = 'Failed to prune CAS';
+        }
+      } catch (err) {
+        feedback.style.color = 'var(--failed)';
+        feedback.innerText = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '🧹 Prune CAS Storage (< 500MB)';
+      }
+    }
 
     // Conexión reactiva en vivo vía Server-Sent Events (SSE)
     try {

@@ -321,3 +321,75 @@ tasks:
     assert!(step1_res.stdout.contains("step1_done"));
     assert!(step2_res.stdout.contains("step2_done"));
 }
+
+#[tokio::test]
+async fn test_remote_coordinator_least_loaded_and_failover() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+
+    let sandbox_a = root.join("sandbox_a");
+    let sandbox_b = root.join("sandbox_b");
+    std::fs::create_dir_all(&sandbox_a).unwrap();
+    std::fs::create_dir_all(&sandbox_b).unwrap();
+
+    // En sandbox_a creamos un archivo indicador que provocará fallo intencional
+    std::fs::write(sandbox_a.join("fail_flag"), "error").unwrap();
+
+    let worker_a = Arc::new(WorkerDaemon::new(
+        "worker-node-a",
+        sandbox_a.clone(),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    ));
+
+    let worker_b = Arc::new(WorkerDaemon::new(
+        "worker-node-b",
+        sandbox_b.clone(),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    ));
+
+    coordinator.register_worker(worker_a.clone());
+    coordinator.register_worker(worker_b.clone());
+
+    assert_eq!(coordinator.worker_load("worker-node-a"), 0);
+    assert_eq!(coordinator.worker_load("worker-node-b"), 0);
+
+    let candidates = coordinator.find_compatible_workers(Some("rust"));
+    assert_eq!(candidates.len(), 2);
+
+    let remote_backend = RemoteExecutionBackend::new(coordinator.clone());
+
+    // Tarea con comando condicional: falla si fail_flag existe
+    let task = Task {
+        id: TaskId::new("failover_test_task"),
+        description: Some("Test automated failover".to_string()),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "cargo --help > /dev/null 2>&1; if [ -f fail_flag ]; then exit 1; else echo worker_failover_succeeded; fi"
+                .to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: vec!["rust".to_string()],
+        timeout_secs: None,
+        retries: 0,
+    };
+
+    let report = remote_backend
+        .execute_task(&task, None, &HashMap::new())
+        .await
+        .unwrap();
+
+    // Debe haber ejecutado worker_b exitosamente gracias a la conmutación por error (failover)
+    assert_eq!(report.state, onaji_core::cache::TaskState::Success);
+    assert_eq!(report.exit_code, Some(0));
+    assert!(report.stdout.contains("worker_failover_succeeded"));
+
+    // Las cargas activas deben retornar a 0 tras finalizar
+    assert_eq!(coordinator.worker_load("worker-node-a"), 0);
+    assert_eq!(coordinator.worker_load("worker-node-b"), 0);
+}

@@ -13,7 +13,11 @@ async fn main() {
     match cli.command {
         Commands::Onboard => handle_onboard(&cli.config),
         Commands::Init { force } => handle_init(&cli.config, force),
-        Commands::Watch { debounce, tests } => handle_watch(&cli.config, debounce, tests).await,
+        Commands::Watch {
+            debounce,
+            tests,
+            env,
+        } => handle_watch(&cli.config, debounce, tests, env).await,
         Commands::Run {
             resource,
             ci,

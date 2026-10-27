@@ -7,7 +7,12 @@ use onaji_core::watcher::ReactiveWatcher;
 use std::path::Path;
 use std::time::Duration;
 
-pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool) {
+pub async fn handle_watch(
+    config_path: &Path,
+    debounce_ms: u64,
+    tests_only: bool,
+    extra_env: Vec<(String, String)>,
+) {
     let workspace_root = resolve_workspace_root(config_path);
     let (manifest, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
@@ -34,7 +39,16 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
     if tests_only {
         println!("Mode:       🧪 Smart Test Selection (--tests enabled)");
     }
+    if !extra_env.is_empty() {
+        println!(
+            "Env:        {} custom variable(s) injected",
+            extra_env.len()
+        );
+    }
     println!("\nWatching for changes... (Press Ctrl+C to stop)\n");
+
+    let extra_env_map: std::sync::Arc<std::collections::HashMap<String, String>> =
+        std::sync::Arc::new(extra_env.into_iter().collect());
 
     let watcher = ReactiveWatcher::new(&workspace_root);
     let mut rx = match watcher.start_watching_with_manifest(
@@ -150,10 +164,14 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
             let task_dag = std::sync::Arc::clone(&dag);
             let task_root = std::sync::Arc::clone(&workspace_root);
             let task_cache = std::sync::Arc::clone(&cache);
+            let task_env = std::sync::Arc::clone(&extra_env_map);
 
             active_run = Some(tokio::spawn(async move {
                 let mut cache_guard = task_cache.lock().await;
                 let mut scheduler = TaskScheduler::new(&task_dag, &*task_root, &mut cache_guard);
+                if !task_env.is_empty() {
+                    scheduler = scheduler.with_env((*task_env).clone());
+                }
                 match scheduler.execute_impact(&impact).await {
                     Ok(summary) => {
                         println!("\nExecution Plan:");

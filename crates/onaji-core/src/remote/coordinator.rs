@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 
 pub struct ClusterCoordinator {
     workers: Arc<RwLock<HashMap<String, Arc<WorkerDaemon>>>>,
+    active_tasks: Arc<RwLock<HashMap<String, usize>>>,
 }
 
 impl Default for ClusterCoordinator {
@@ -18,6 +19,7 @@ impl ClusterCoordinator {
     pub fn new() -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
+            active_tasks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -29,6 +31,8 @@ impl ClusterCoordinator {
     pub fn unregister_worker(&self, worker_id: &str) {
         let mut map = self.workers.write().unwrap();
         map.remove(worker_id);
+        let mut loads = self.active_tasks.write().unwrap();
+        loads.remove(worker_id);
     }
 
     pub fn list_workers(&self) -> Vec<WorkerRegistration> {
@@ -36,21 +40,43 @@ impl ClusterCoordinator {
         map.values().map(|w| w.registration.clone()).collect()
     }
 
+    pub fn worker_load(&self, worker_id: &str) -> usize {
+        let loads = self.active_tasks.read().unwrap();
+        loads.get(worker_id).copied().unwrap_or(0)
+    }
+
+    /// Retorna todos los workers compatibles con el toolchain requerido,
+    /// ordenados por menor carga activa (algoritmo least-loaded).
+    pub fn find_compatible_workers(
+        &self,
+        required_toolchain: Option<&str>,
+    ) -> Vec<Arc<WorkerDaemon>> {
+        let map = self.workers.read().unwrap();
+        let loads = self.active_tasks.read().unwrap();
+
+        let mut compatible: Vec<Arc<WorkerDaemon>> = map
+            .values()
+            .filter(|w| {
+                if let Some(req) = required_toolchain {
+                    w.registration.toolchains.contains_key(req)
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        compatible.sort_by_key(|w| loads.get(&w.registration.worker_id).copied().unwrap_or(0));
+        compatible
+    }
+
     pub fn find_compatible_worker(
         &self,
         required_toolchain: Option<&str>,
     ) -> Option<Arc<WorkerDaemon>> {
-        let map = self.workers.read().unwrap();
-        for worker in map.values() {
-            if let Some(req) = required_toolchain {
-                if worker.registration.toolchains.contains_key(req) {
-                    return Some(worker.clone());
-                }
-            } else {
-                return Some(worker.clone());
-            }
-        }
-        None
+        self.find_compatible_workers(required_toolchain)
+            .into_iter()
+            .next()
     }
 
     pub async fn dispatch_task(
@@ -66,17 +92,46 @@ impl ClusterCoordinator {
             None
         };
 
-        let worker = self.find_compatible_worker(req_toolchain).ok_or_else(|| {
-            RunnerError::ExecutionFailed {
+        let candidates = self.find_compatible_workers(req_toolchain);
+        if candidates.is_empty() {
+            return Err(RunnerError::ExecutionFailed {
                 code: Some(127),
                 stderr: format!(
                     "No remote worker available with required toolchain capability '{:?}'",
                     req_toolchain
                 ),
-            }
-        })?;
+            });
+        }
 
-        let report = worker.execute_assignment(&assignment).await;
-        Ok(report)
+        let mut last_report = None;
+
+        for worker in candidates {
+            let worker_id = worker.registration.worker_id.clone();
+
+            // Incrementar contador de tareas activas del worker seleccionado
+            {
+                let mut loads = self.active_tasks.write().unwrap();
+                *loads.entry(worker_id.clone()).or_insert(0) += 1;
+            }
+
+            let report = worker.execute_assignment(&assignment).await;
+
+            // Decrementar contador de tareas activas al finalizar
+            {
+                let mut loads = self.active_tasks.write().unwrap();
+                if let Some(val) = loads.get_mut(&worker_id) {
+                    *val = val.saturating_sub(1);
+                }
+            }
+
+            if report.success {
+                return Ok(report);
+            }
+
+            // En caso de fallo, guardar el reporte y continuar al siguiente worker compatible si existe
+            last_report = Some(report);
+        }
+
+        Ok(last_report.unwrap())
     }
 }

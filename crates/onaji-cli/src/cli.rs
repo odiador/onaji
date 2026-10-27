@@ -64,6 +64,14 @@ pub enum Commands {
             help = "Smart Test Selection: only execute tests and their causal prerequisites"
         )]
         tests: bool,
+
+        #[arg(
+            short = 'e',
+            long = "env",
+            value_parser = parse_key_val,
+            help = "Pass custom environment variable(s) into reactively triggered tasks (KEY=VALUE)"
+        )]
+        env: Vec<(String, String)>,
     },
 
     /// Run tasks or trigger a pipeline manually or in CI/CD environments
