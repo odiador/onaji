@@ -19,7 +19,7 @@ pub async fn handle_run(
     trace: bool,
     trace_format: OutputFormat,
     trace_output: Option<PathBuf>,
-    _remote: bool,
+    remote: bool,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
     let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
@@ -72,9 +72,35 @@ pub async fn handle_run(
         None
     };
 
+    let backend_opt: Option<std::sync::Arc<dyn onaji_core::remote::ExecutionBackend>> = if remote {
+        let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
+        let worker_sandbox = workspace_root.join(".onaji").join("worker_sandbox");
+        let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
+            "worker-local",
+            worker_sandbox,
+            std::collections::HashMap::from([
+                ("rust".to_string(), "installed".to_string()),
+                ("sh".to_string(), "installed".to_string()),
+                ("android_sdk".to_string(), "installed".to_string()),
+            ]),
+        ));
+        coordinator.register_worker(worker);
+        if output == OutputFormat::Text {
+            println!("⚡ [remote] Dispatching tasks through cluster coordinator.");
+        }
+        Some(std::sync::Arc::new(
+            onaji_core::remote::RemoteExecutionBackend::new(coordinator),
+        ))
+    } else {
+        None
+    };
+
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler =
         TaskScheduler::new(&dag, &workspace_root, &mut cache).with_fail_fast(fail_fast);
+    if let Some(b) = backend_opt {
+        scheduler = scheduler.with_backend(b);
+    }
 
     let tasks_to_run: Vec<onaji_core::domain::TaskId> = if let Some(res_str) = resource_filter {
         let res_id = ResourceId::new(res_str);

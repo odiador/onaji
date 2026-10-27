@@ -264,3 +264,52 @@ async fn test_remote_worker_tcp_server_lifecycle() {
 
     srv_handle.abort();
 }
+
+#[tokio::test]
+async fn test_scheduler_with_remote_execution_backend() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+
+    let yaml = r#"
+name: remote-scheduler-test
+version: "1.0"
+tasks:
+  build_step1:
+    run: "echo step1_done"
+  build_step2:
+    run: "echo step2_done"
+"#;
+    let (_, dag) = onaji_core::config::ConfigLoader::load_from_str(yaml).unwrap();
+    let mut cache = onaji_core::cache::ExecutionCache::new();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    let worker = Arc::new(WorkerDaemon::new(
+        "worker-sched",
+        root.join("worker_sandbox"),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    ));
+    coordinator.register_worker(worker);
+
+    let backend = Arc::new(RemoteExecutionBackend::new(coordinator));
+
+    let mut scheduler =
+        onaji_core::scheduler::TaskScheduler::new(&dag, root, &mut cache).with_backend(backend);
+
+    let summary = scheduler
+        .execute_tasks(&[TaskId::new("build_step1"), TaskId::new("build_step2")])
+        .await
+        .unwrap();
+
+    assert!(summary.success);
+    assert_eq!(summary.results.len(), 2);
+    assert_eq!(
+        summary.results[0].state,
+        onaji_core::cache::TaskState::Success
+    );
+    assert_eq!(
+        summary.results[1].state,
+        onaji_core::cache::TaskState::Success
+    );
+    assert!(summary.results[0].stdout.contains("step1_done"));
+    assert!(summary.results[1].stdout.contains("step2_done"));
+}

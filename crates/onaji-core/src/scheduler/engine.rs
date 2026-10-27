@@ -18,6 +18,7 @@ pub struct TaskScheduler<'a> {
     workspace_root: PathBuf,
     cache: &'a mut ExecutionCache,
     fail_fast: bool,
+    backend: Option<std::sync::Arc<dyn crate::remote::ExecutionBackend>>,
 }
 
 impl<'a> TaskScheduler<'a> {
@@ -31,11 +32,20 @@ impl<'a> TaskScheduler<'a> {
             workspace_root: workspace_root.as_ref().to_path_buf(),
             cache,
             fail_fast: false,
+            backend: None,
         }
     }
 
     pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
         self.fail_fast = fail_fast;
+        self
+    }
+
+    pub fn with_backend(
+        mut self,
+        backend: std::sync::Arc<dyn crate::remote::ExecutionBackend>,
+    ) -> Self {
+        self.backend = Some(backend);
         self
     }
 
@@ -251,6 +261,7 @@ impl<'a> TaskScheduler<'a> {
                 for (task, cache_key) in tasks_to_run_parallel {
                     let root = self.workspace_root.clone();
                     let key_opt = Some(cache_key);
+                    let backend_cloned = self.backend.clone();
                     join_set.spawn(async move {
                         let mut attempts = 0;
                         let max_attempts = task.retries.saturating_add(1);
@@ -258,7 +269,15 @@ impl<'a> TaskScheduler<'a> {
 
                         while attempts < max_attempts {
                             attempts += 1;
-                            let res = ProcessExecutor::execute(&task, &root, key_opt.clone()).await;
+                            let res = match &backend_cloned {
+                                Some(b) => {
+                                    b.execute_task(&task, key_opt.clone(), &HashMap::new())
+                                        .await
+                                }
+                                None => {
+                                    ProcessExecutor::execute(&task, &root, key_opt.clone()).await
+                                }
+                            };
                             match &res {
                                 Ok(r) if r.state == TaskState::Success => {
                                     final_res = Some(res);

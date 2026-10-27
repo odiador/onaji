@@ -241,7 +241,8 @@ pub fn detect_git_changes(
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            files.insert(std::path::PathBuf::from(line));
+            let clean = line.trim_matches('"');
+            files.insert(std::path::PathBuf::from(clean));
         }
     }
 
@@ -253,7 +254,8 @@ pub fn detect_git_changes(
             if out.status.success() {
                 let text = String::from_utf8_lossy(&out.stdout);
                 for line in text.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    files.insert(std::path::PathBuf::from(line));
+                    let clean = line.trim_matches('"');
+                    files.insert(std::path::PathBuf::from(clean));
                 }
             }
         }
@@ -268,7 +270,17 @@ pub fn detect_git_changes(
                     if line.len() > 3 {
                         let path_str = line[3..].trim();
                         if !path_str.is_empty() {
-                            files.insert(std::path::PathBuf::from(path_str));
+                            let clean = path_str.trim_matches('"');
+                            if let Some((old_p, new_p)) = clean.split_once(" -> ") {
+                                files.insert(std::path::PathBuf::from(
+                                    old_p.trim().trim_matches('"'),
+                                ));
+                                files.insert(std::path::PathBuf::from(
+                                    new_p.trim().trim_matches('"'),
+                                ));
+                            } else {
+                                files.insert(std::path::PathBuf::from(clean));
+                            }
                         }
                     }
                 }

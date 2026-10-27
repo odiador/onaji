@@ -39,7 +39,7 @@ else
 fi
 
 echo "⚡ [onaji-hook] Running selective impact tests for staged/uncommitted changes..."
-$ONAJI_BIN affected --since HEAD~1 --uncommitted --run --tests
+$ONAJI_BIN affected --since HEAD --uncommitted --run --tests
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
     echo "✗ [onaji-hook] Pre-commit validation failed. Fix failing tasks before committing."
