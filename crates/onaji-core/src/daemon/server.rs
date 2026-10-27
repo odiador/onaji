@@ -2,19 +2,20 @@ use super::dispatcher::Dispatcher;
 use onaji_protocol::error::{ErrorCode, RpcError};
 use onaji_protocol::messages::{RpcRequest, RpcResponse};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
 
 pub struct DaemonServer {
-    dispatcher: Dispatcher,
+    dispatcher: Arc<Dispatcher>,
 }
 
 impl DaemonServer {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         let root = workspace_root.as_ref().to_path_buf();
         Self {
-            dispatcher: Dispatcher::new(&root),
+            dispatcher: Arc::new(Dispatcher::new(&root)),
         }
     }
 
@@ -50,7 +51,7 @@ impl DaemonServer {
         Ok(())
     }
 
-    /// Ejecuta el servidor JSON-RPC sobre un Unix Domain Socket (macOS / Linux)
+    /// Ejecuta el servidor JSON-RPC sobre un Unix Domain Socket con soporte multi-cliente concurrente
     #[cfg(unix)]
     pub async fn run_unix_socket(
         &mut self,
@@ -69,31 +70,42 @@ impl DaemonServer {
         tracing::info!("Onaji Daemon listening on UDS: {}", path.display());
 
         while let Ok((stream, _)) = listener.accept().await {
-            let (reader, mut writer) = tokio::io::split(stream);
-            let mut lines = BufReader::new(reader).lines();
+            let dispatcher = Arc::clone(&self.dispatcher);
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
+            tokio::spawn(async move {
+                let (reader, mut writer) = tokio::io::split(stream);
+                let mut lines = BufReader::new(reader).lines();
 
-                let response = match serde_json::from_str::<RpcRequest>(line) {
-                    Ok(req) => self.dispatcher.dispatch_request(&req).await,
-                    Err(err) => RpcResponse::error(
-                        None,
-                        RpcError::new(
-                            ErrorCode::ParseError,
-                            format!("Invalid JSON-RPC request: {}", err),
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let response = match serde_json::from_str::<RpcRequest>(line) {
+                        Ok(req) => dispatcher.dispatch_request(&req).await,
+                        Err(err) => RpcResponse::error(
+                            None,
+                            RpcError::new(
+                                ErrorCode::ParseError,
+                                format!("Invalid JSON-RPC request: {}", err),
+                            ),
                         ),
-                    ),
-                };
+                    };
 
-                let mut out_str = serde_json::to_string(&response)?;
-                out_str.push('\n');
-                let _ = writer.write_all(out_str.as_bytes()).await;
-                let _ = writer.flush().await;
-            }
+                    let mut out_str = match serde_json::to_string(&response) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    out_str.push('\n');
+                    if writer.write_all(out_str.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if writer.flush().await.is_err() {
+                        break;
+                    }
+                }
+            });
         }
 
         Ok(())

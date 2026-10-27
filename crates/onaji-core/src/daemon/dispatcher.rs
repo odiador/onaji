@@ -39,7 +39,7 @@ impl Dispatcher {
         }
     }
 
-    pub async fn dispatch_request(&mut self, req: &RpcRequest) -> RpcResponse {
+    pub async fn dispatch_request(&self, req: &RpcRequest) -> RpcResponse {
         let id = req.id;
         match req.method.as_str() {
             "initialize" => self.handle_initialize(id, req.params.as_ref()),

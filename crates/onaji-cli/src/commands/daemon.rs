@@ -32,7 +32,7 @@ pub async fn handle_rpc(
     _socket: Option<PathBuf>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
-    let mut dispatcher = onaji_core::Dispatcher::new(&workspace_root);
+    let dispatcher = onaji_core::Dispatcher::new(&workspace_root);
 
     let parsed_params: Option<serde_json::Value> =
         params_str.and_then(|s| serde_json::from_str(&s).ok());

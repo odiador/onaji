@@ -132,7 +132,7 @@ async fn run_architecture_and_performance_benchmark() {
     // 4. Benchmark: JSON-RPC Dispatcher Handling
     {
         let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
-        let mut dispatcher = Dispatcher::new(workspace_root);
+        let dispatcher = Dispatcher::new(workspace_root);
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(1),

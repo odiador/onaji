@@ -27,7 +27,7 @@ tasks:
 "#;
     std::fs::write(root.join("onaji.yaml"), yaml).unwrap();
 
-    let mut dispatcher = Dispatcher::new(root);
+    let dispatcher = Dispatcher::new(root);
 
     // 1. Test initialize method
     let init_req = RpcRequest::new(

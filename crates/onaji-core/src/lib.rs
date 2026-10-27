@@ -668,7 +668,7 @@ tasks:
         )
         .unwrap();
 
-        let mut dispatcher = Dispatcher::new(&temp_dir);
+        let dispatcher = Dispatcher::new(&temp_dir);
 
         // 1. Initialize
         let init_req = RpcRequest::new(
