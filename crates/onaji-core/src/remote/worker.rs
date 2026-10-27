@@ -1,8 +1,8 @@
 use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, WorkerRegistration};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
+use tokio::process::Command;
 
 pub struct WorkerDaemon {
     pub registration: WorkerRegistration,
@@ -29,7 +29,7 @@ impl WorkerDaemon {
         }
     }
 
-    pub fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
+    pub async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
         let start = Instant::now();
         std::fs::create_dir_all(&self.sandbox_root).ok();
 
@@ -74,7 +74,33 @@ impl WorkerDaemon {
             c
         };
 
-        match cmd.output() {
+        cmd.kill_on_drop(true);
+
+        let wait_result = if assignment.timeout_ms > 0 {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(assignment.timeout_ms),
+                cmd.output(),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(124),
+                        stdout: String::new(),
+                        stderr: format!("Remote task timed out after {}ms", assignment.timeout_ms),
+                        duration_ms,
+                        success: false,
+                    };
+                }
+            }
+        } else {
+            cmd.output().await
+        };
+
+        match wait_result {
             Ok(output) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 let exit_code = output.status.code();
@@ -97,7 +123,7 @@ impl WorkerDaemon {
                     task_id: assignment.task_id.clone(),
                     exit_code: Some(1),
                     stdout: String::new(),
-                    stderr: format!("Failed to spawn process on worker: {}", err),
+                    stderr: format!("Process execution error on worker: {}", err),
                     duration_ms,
                     success: false,
                 }

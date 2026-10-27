@@ -297,12 +297,17 @@ impl<'a> TaskScheduler<'a> {
                         overall_success = false;
                         self.cache.invalidate(&task.id);
 
-                        // Bloquear tareas restantes en oleadas posteriores
-                        for remaining_id in &sorted_task_ids {
-                            if remaining_id != &task.id
-                                && !executed_results.contains_key(remaining_id)
-                            {
-                                blocked_tasks.insert(remaining_id.clone());
+                        // Bloquear causalmente solo a los descendientes transitivos reales en el DAG
+                        if let Some(&task_idx) = self.dag.task_indices.get(&task.id) {
+                            let mut bfs = petgraph::visit::Bfs::new(&self.dag.graph, task_idx);
+                            while let Some(visited_idx) = bfs.next(&self.dag.graph) {
+                                if let Some(crate::graph::dag::GraphNode::Task(downstream_task)) =
+                                    self.dag.graph.node_weight(visited_idx)
+                                {
+                                    if downstream_task.id != task.id {
+                                        blocked_tasks.insert(downstream_task.id.clone());
+                                    }
+                                }
                             }
                         }
                     }

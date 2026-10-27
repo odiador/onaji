@@ -76,7 +76,7 @@ impl ClusterCoordinator {
             }
         })?;
 
-        let report = worker.execute_assignment(&assignment);
+        let report = worker.execute_assignment(&assignment).await;
         Ok(report)
     }
 }

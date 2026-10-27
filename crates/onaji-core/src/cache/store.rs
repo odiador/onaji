@@ -75,8 +75,8 @@ impl ExecutionCache {
         );
     }
 
-    pub fn invalidate(&mut self, task_id: &TaskId) {
-        self.records.remove(task_id.as_str());
+    pub fn invalidate(&mut self, task_id: &TaskId) -> Option<CacheKey> {
+        self.records.remove(task_id.as_str()).map(|r| r.cache_key)
     }
 
     pub fn clear(&mut self) {

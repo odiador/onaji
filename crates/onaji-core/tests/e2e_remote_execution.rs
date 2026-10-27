@@ -109,8 +109,8 @@ async fn test_remote_cluster_coordinator_and_capability_scheduling() {
     assert!(unavailable_worker.is_none());
 }
 
-#[test]
-fn test_remote_worker_container_execution() {
+#[tokio::test]
+async fn test_remote_worker_container_execution() {
     let temp_dir = tempfile::tempdir().unwrap();
     let worker = WorkerDaemon::new(
         "worker-container-test",
@@ -134,10 +134,34 @@ fn test_remote_worker_container_execution() {
         timeout_ms: 30000,
     };
 
-    let report = worker.execute_assignment(&assignment);
+    let report = worker.execute_assignment(&assignment).await;
     assert!(report.success);
     assert_eq!(report.exit_code, Some(0));
     assert!(report.stdout.contains("run --rm -i -v"));
     assert!(report.stdout.contains("rust:1.80-alpine"));
     assert!(report.stdout.contains("uname -a"));
+}
+
+#[tokio::test]
+async fn test_remote_worker_timeout_enforcement() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let worker = WorkerDaemon::new(
+        "worker-timeout-test",
+        temp_dir.path(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+
+    let assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "hanging_remote_task".to_string(),
+        workspace_id: "ws-main".to_string(),
+        action_cmd: "sleep 5".to_string(),
+        env: HashMap::new(),
+        cache_key: "timeoutkey123".to_string(),
+        timeout_ms: 50,
+    };
+
+    let report = worker.execute_assignment(&assignment).await;
+    assert!(!report.success);
+    assert_eq!(report.exit_code, Some(124));
+    assert!(report.stderr.contains("Remote task timed out after 50ms"));
 }

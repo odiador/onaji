@@ -27,8 +27,8 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-bottom: 24px; }
     .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; backdrop-filter: blur(12px); }
     .card-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
-    .dag-canvas { width: 100%; min-height: 340px; background: rgba(10, 15, 26, 0.7); border-radius: 8px; border: 1px dashed var(--card-border); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-    .dag-node { padding: 12px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; margin: 8px; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid var(--card-border); }
+    .dag-canvas { width: 100%; min-height: 340px; background: rgba(10, 15, 26, 0.7); border-radius: 8px; border: 1px dashed var(--card-border); padding: 20px; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; position: relative; overflow-y: auto; max-height: 600px; }
+    .dag-node { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid var(--card-border); }
     .node-resource { background: #1e293b; border-color: #475569; }
     .node-task { background: #1e1b4b; border-color: var(--accent); }
     .node-artifact { background: #064e3b; border-color: var(--success); }
@@ -44,22 +44,16 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <div class="logo">ONΛJI <span class="logo-badge">CLUSTER ACTIVE</span></div>
+    <div class="logo">ONΛJI <span class="logo-badge" id="project-badge">CLUSTER ACTIVE</span></div>
     <div class="status-pill"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success)"></span> DAEMON READY (JSON-RPC)</div>
   </header>
 
   <div class="grid">
     <div class="card">
-      <div class="card-title">Interactive Causal DAG Visualizer <span class="tag">Auto-Layout</span></div>
+      <div class="card-title">Interactive Causal DAG Visualizer <span class="tag" id="dag-count">Auto-Layout</span></div>
       <div class="dag-canvas" id="dag">
-        <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
-          <div class="dag-node node-resource">📁 Resource: openapi_spec (api/openapi.yaml)</div>
-          <div style="color:var(--text-muted)">↓</div>
-          <div class="dag-node node-task" style="border-color:var(--running)">⚡ Task: validate_openapi (redocly lint)</div>
-          <div style="color:var(--text-muted)">↓</div>
-          <div class="dag-node node-artifact">📦 Artifact: openapi_contract</div>
-          <div style="color:var(--text-muted)">↓</div>
-          <div class="dag-node node-task" style="border-color:var(--success)">⚡ Task: generate_kotlin (openapi-generator)</div>
+        <div style="display: flex; flex-direction: column; gap: 12px; align-items: center;">
+          <div class="dag-node node-resource">📁 Resource: Loading workspace...</div>
         </div>
       </div>
     </div>
@@ -99,19 +93,89 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       <div class="card-title" style="margin-top:24px">Distributed Cache (CAS)</div>
       <div class="stat-row">
         <span>Cache Hit Ratio</span>
-        <span style="font-weight:700;color:var(--success)">88.4%</span>
+        <span style="font-weight:700;color:var(--success)" id="cache-ratio">88.4%</span>
       </div>
-      <div class="progress-bar"><div class="progress-fill" style="width:88.4%"></div></div>
+      <div class="progress-bar"><div class="progress-fill" id="cache-fill" style="width:88.4%"></div></div>
       <div class="stat-row" style="margin-top:10px">
-        <span>Local Tier 1 Hits</span>
-        <span>142</span>
+        <span>Tracked Tasks</span>
+        <span id="tasks-count">-</span>
       </div>
       <div class="stat-row">
-        <span>Remote Tier 2 Hits</span>
-        <span>48</span>
+        <span>Monitored Resources</span>
+        <span id="resources-count">-</span>
       </div>
     </div>
   </div>
+
+  <script>
+    async function updateDashboard() {
+      try {
+        const statusRes = await fetch('/api/status');
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          if (status.project_name) {
+            document.getElementById('project-badge').innerText = status.project_name.toUpperCase();
+          }
+          if (status.tasks_count !== undefined) {
+            document.getElementById('tasks-count').innerText = status.tasks_count;
+          }
+          if (status.resources_count !== undefined) {
+            document.getElementById('resources-count').innerText = status.resources_count;
+          }
+          if (status.cache_hit_ratio !== undefined) {
+            const pct = (status.cache_hit_ratio * 100).toFixed(1) + '%';
+            document.getElementById('cache-ratio').innerText = pct;
+            document.getElementById('cache-fill').style.width = pct;
+          }
+        }
+
+        const graphRes = await fetch('/api/graph');
+        if (graphRes.ok) {
+          const graph = await graphRes.json();
+          if (graph.nodes && graph.nodes.length > 0) {
+            const container = document.getElementById('dag');
+            container.innerHTML = '';
+            document.getElementById('dag-count').innerText = graph.nodes.length + ' Nodes';
+
+            const flow = document.createElement('div');
+            flow.style.display = 'flex';
+            flow.style.flexDirection = 'column';
+            flow.style.gap = '10px';
+            flow.style.alignItems = 'center';
+            flow.style.width = '100%';
+
+            graph.nodes.forEach((node, idx) => {
+              const nodeEl = document.createElement('div');
+              nodeEl.className = 'dag-node';
+              if (node.type === 'resource') {
+                nodeEl.classList.add('node-resource');
+                nodeEl.innerText = '📁 Resource: ' + node.id;
+              } else if (node.type === 'task') {
+                nodeEl.classList.add('node-task');
+                nodeEl.innerText = '⚡ Task: ' + node.id;
+              } else {
+                nodeEl.classList.add('node-artifact');
+                nodeEl.innerText = '📦 Artifact: ' + node.id;
+              }
+              flow.appendChild(nodeEl);
+              if (idx < graph.nodes.length - 1) {
+                const arrow = document.createElement('div');
+                arrow.style.color = 'var(--text-muted)';
+                arrow.style.fontSize = '12px';
+                arrow.innerText = '↓';
+                flow.appendChild(arrow);
+              }
+            });
+            container.appendChild(flow);
+          }
+        }
+      } catch (e) {
+        console.warn('Dashboard update failed:', e);
+      }
+    }
+    updateDashboard();
+    setInterval(updateDashboard, 5000);
+  </script>
 </body>
 </html>
 "#;

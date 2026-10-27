@@ -13,6 +13,7 @@ pub enum NormalizationResult {
 pub struct EventNormalizer {
     resource_paths: HashMap<PathBuf, ResourceId>,
     fingerprints: HashMap<ResourceId, Fingerprint>,
+    file_fingerprints: HashMap<PathBuf, Fingerprint>,
     workspace_root: PathBuf,
 }
 
@@ -21,6 +22,7 @@ impl EventNormalizer {
         Self {
             resource_paths: HashMap::new(),
             fingerprints: HashMap::new(),
+            file_fingerprints: HashMap::new(),
             workspace_root: workspace_root.as_ref().to_path_buf(),
         }
     }
@@ -39,10 +41,35 @@ impl EventNormalizer {
                 let lookup_path = full_path
                     .canonicalize()
                     .unwrap_or_else(|_| full_path.clone());
-                self.resource_paths.insert(lookup_path, res.id.clone());
+                self.resource_paths
+                    .insert(lookup_path.clone(), res.id.clone());
 
                 if let Ok(fp) = Fingerprinter::compute_path(&full_path) {
                     self.fingerprints.insert(res.id.clone(), fp);
+                }
+
+                if full_path.is_file() {
+                    if let Ok(fp) = Fingerprinter::compute_file(&full_path) {
+                        self.file_fingerprints.insert(lookup_path, fp);
+                    }
+                } else if full_path.is_dir() {
+                    self.scan_and_fingerprint_files(&full_path);
+                }
+            }
+        }
+    }
+
+    fn scan_and_fingerprint_files(&mut self, dir: &Path) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Ok(fp) = Fingerprinter::compute_file(&path) {
+                        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+                        self.file_fingerprints.insert(canon, fp);
+                    }
+                } else if path.is_dir() {
+                    self.scan_and_fingerprint_files(&path);
                 }
             }
         }
@@ -57,8 +84,8 @@ impl EventNormalizer {
         // Buscamos coincidencia directa o si event_path es hijo de un directorio observado
         let matched_resource = self.find_matching_resource(&lookup_path);
 
-        let resource_id = match matched_resource {
-            Some(id) => id,
+        let (res_path, resource_id) = match matched_resource {
+            Some(pair) => pair,
             None => return NormalizationResult::UnrelatedPath(event_path.to_path_buf()),
         };
 
@@ -68,7 +95,10 @@ impl EventNormalizer {
             .unwrap_or(0);
 
         if !lookup_path.exists() {
-            self.fingerprints.remove(&resource_id);
+            self.file_fingerprints.remove(&lookup_path);
+            if lookup_path == res_path {
+                self.fingerprints.remove(&resource_id);
+            }
             let event = Event::new(
                 EventId::new(format!("ev-{}", now)),
                 resource_id,
@@ -80,15 +110,30 @@ impl EventNormalizer {
 
         match Fingerprinter::compute_path(&lookup_path) {
             Ok(new_fp) => {
-                if let Some(old_fp) = self.fingerprints.get(&resource_id) {
+                // Comprobar si este archivo específico no ha variado en contenido
+                if let Some(old_fp) = self.file_fingerprints.get(&lookup_path) {
                     if *old_fp == new_fp {
                         // El contenido NO ha cambiado (touch o re-escritura idéntica)
                         return NormalizationResult::IgnoredUnchanged { resource_id };
                     }
+                } else if lookup_path == res_path {
+                    if let Some(old_fp) = self.fingerprints.get(&resource_id) {
+                        if *old_fp == new_fp {
+                            return NormalizationResult::IgnoredUnchanged { resource_id };
+                        }
+                    }
                 }
 
                 // El contenido cambió realmente
-                self.fingerprints.insert(resource_id.clone(), new_fp);
+                self.file_fingerprints.insert(lookup_path.clone(), new_fp);
+                if lookup_path == res_path {
+                    self.fingerprints.insert(resource_id.clone(), new_fp);
+                } else if res_path.is_dir() {
+                    if let Ok(dir_fp) = Fingerprinter::compute_dir(&res_path) {
+                        self.fingerprints.insert(resource_id.clone(), dir_fp);
+                    }
+                }
+
                 let event = Event::new(
                     EventId::new(format!("ev-{}", now)),
                     resource_id,
@@ -103,15 +148,15 @@ impl EventNormalizer {
         }
     }
 
-    fn find_matching_resource(&self, path: &Path) -> Option<ResourceId> {
+    fn find_matching_resource(&self, path: &Path) -> Option<(PathBuf, ResourceId)> {
         if let Some(id) = self.resource_paths.get(path) {
-            return Some(id.clone());
+            return Some((path.to_path_buf(), id.clone()));
         }
 
         // Si el recurso es un directorio contenedor
         for (res_path, id) in &self.resource_paths {
             if path.starts_with(res_path) {
-                return Some(id.clone());
+                return Some((res_path.clone(), id.clone()));
             }
         }
 

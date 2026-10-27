@@ -16,12 +16,34 @@ pub fn handle_clean(config_path: &Path, all: bool, task_id_filter: Option<String
     if let Some(task_id_str) = task_id_filter {
         let task_id = TaskId::new(task_id_str);
         let mut cache = ExecutionCache::load_or_new(&workspace_root);
-        cache.invalidate(&task_id);
+        let removed_key = cache.invalidate(&task_id);
         let _ = cache.save(&workspace_root);
-        println!(
-            "✓ Invalidated cache record for task '{}' in workspace.",
-            task_id
-        );
+
+        let mut cas_freed = 0;
+        if let Some(key) = removed_key {
+            let cas_task_dir = workspace_root
+                .join(".onaji")
+                .join("cache")
+                .join("cas")
+                .join(&key.0);
+            if cas_task_dir.exists() {
+                cas_freed = dir_size(&cas_task_dir);
+                let _ = std::fs::remove_dir_all(&cas_task_dir);
+            }
+        }
+
+        if cas_freed > 0 {
+            println!(
+                "✓ Invalidated cache record and purged {} of CAS artifacts for task '{}'.",
+                format_bytes(cas_freed),
+                task_id
+            );
+        } else {
+            println!(
+                "✓ Invalidated cache record for task '{}' in workspace.",
+                task_id
+            );
+        }
         return;
     }
 
