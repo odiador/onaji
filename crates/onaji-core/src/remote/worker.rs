@@ -1,6 +1,7 @@
 use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, WorkerRegistration};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
 
@@ -128,6 +129,58 @@ impl WorkerDaemon {
                     success: false,
                 }
             }
+        }
+    }
+
+    /// Inicia un servidor TCP para recibir y ejecutar asignaciones de tareas de forma distribuida
+    pub async fn run_server(self: Arc<Self>, bind_addr: &str) -> std::io::Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(bind_addr).await?;
+
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let worker = Arc::clone(&self);
+
+            tokio::spawn(async move {
+                let (reader, mut writer) = tokio::io::split(stream);
+                let mut lines = BufReader::new(reader).lines();
+
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let assignment = match serde_json::from_str::<TaskAssignment>(line) {
+                        Ok(a) => a,
+                        Err(err) => {
+                            let report = TaskExecutionReport {
+                                task_id: "unknown".to_string(),
+                                exit_code: Some(1),
+                                stdout: String::new(),
+                                stderr: format!("Invalid TaskAssignment JSON: {}", err),
+                                duration_ms: 0,
+                                success: false,
+                            };
+                            if let Ok(mut resp_str) = serde_json::to_string(&report) {
+                                resp_str.push('\n');
+                                let _ = writer.write_all(resp_str.as_bytes()).await;
+                                let _ = writer.flush().await;
+                            }
+                            continue;
+                        }
+                    };
+
+                    let report = worker.execute_assignment(&assignment).await;
+                    if let Ok(mut resp_str) = serde_json::to_string(&report) {
+                        resp_str.push('\n');
+                        let _ = writer.write_all(resp_str.as_bytes()).await;
+                        let _ = writer.flush().await;
+                    }
+                }
+            });
         }
     }
 }

@@ -61,7 +61,7 @@ async fn main() {
             .await
         }
         Commands::Explain { task } => handle_explain(&cli.config, &task),
-        Commands::Worker { command } => handle_worker(&cli.config, command),
+        Commands::Worker { command } => handle_worker(&cli.config, command).await,
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,
         Commands::Rpc {
             method,

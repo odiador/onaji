@@ -106,4 +106,111 @@ impl SandboxedProcessRunner {
             )),
         }
     }
+
+    /// Ejecuta una acción de forma asíncrona dentro del sandbox con `kill_on_drop(true)` y cumplimiento estricto de timeout.
+    pub async fn execute_action_async(
+        &self,
+        action: &Action,
+        extra_env: &HashMap<String, String>,
+    ) -> Result<(i32, String, String, u64), RunnerError> {
+        let start = Instant::now();
+        std::fs::create_dir_all(&self.sandbox_root).ok();
+
+        match action {
+            Action::Command {
+                run,
+                working_dir,
+                env,
+            } => {
+                // 1. Validar autorización de comando
+                if let Err(violation) = self.checker.validate_command(run) {
+                    return Err(RunnerError::ExecutionFailed {
+                        code: Some(126),
+                        stderr: format!(
+                            "Security Violation [{}]: {}",
+                            violation.violation_type as u8, violation.details
+                        ),
+                    });
+                }
+
+                // 2. Confinar directorio de trabajo
+                let cwd = match working_dir {
+                    Some(dir) => self
+                        .checker
+                        .validate_path(&self.sandbox_root, dir)
+                        .map_err(|v| RunnerError::ExecutionFailed {
+                            code: Some(126),
+                            stderr: format!("Security Violation: {}", v.details),
+                        })?,
+                    None => self.sandbox_root.clone(),
+                };
+
+                // 3. Aislar variables de entorno
+                let mut merged_env = env.clone();
+                for (k, v) in extra_env {
+                    merged_env.insert(k.clone(), v.clone());
+                }
+                let scrubbed_env = self.checker.filter_environment(&merged_env);
+
+                #[cfg(unix)]
+                let mut cmd = tokio::process::Command::new("sh");
+                #[cfg(unix)]
+                cmd.arg("-c").arg(run);
+
+                #[cfg(windows)]
+                let mut cmd = tokio::process::Command::new("cmd");
+                #[cfg(windows)]
+                cmd.arg("/C").arg(run);
+
+                cmd.current_dir(cwd);
+                cmd.env_clear();
+                cmd.kill_on_drop(true);
+                for (k, v) in scrubbed_env {
+                    cmd.env(k, v);
+                }
+
+                let wait_output = if let Some(timeout_secs) = self.checker.policy.timeout_secs {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(timeout_secs),
+                        cmd.output(),
+                    )
+                    .await
+                    {
+                        Ok(res) => res?,
+                        Err(_) => {
+                            return Err(RunnerError::ExecutionFailed {
+                                code: Some(124),
+                                stderr: format!(
+                                    "Execution timeout: command exceeded security policy limit of {} seconds",
+                                    timeout_secs
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    cmd.output().await?
+                };
+
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let exit_code = wait_output.status.code().unwrap_or(1);
+                let stdout = String::from_utf8_lossy(&wait_output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&wait_output.stderr).to_string();
+
+                if wait_output.status.success() {
+                    Ok((exit_code, stdout, stderr, duration_ms))
+                } else {
+                    Err(RunnerError::ExecutionFailed {
+                        code: Some(exit_code),
+                        stderr,
+                    })
+                }
+            }
+            Action::Builtin { adapter, .. } => Ok((
+                0,
+                format!("Executed builtin adapter '{}'", adapter),
+                String::new(),
+                1,
+            )),
+        }
+    }
 }

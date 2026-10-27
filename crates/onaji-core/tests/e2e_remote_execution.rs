@@ -207,3 +207,60 @@ async fn test_remote_backend_dynamic_task_timeout() {
     assert!(res.stderr.contains("Remote task timed out after 1000ms"));
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
 }
+
+#[tokio::test]
+async fn test_remote_worker_tcp_server_lifecycle() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpStream;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let worker = Arc::new(WorkerDaemon::new(
+        "worker-tcp-node",
+        temp_dir.path(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    ));
+
+    // Find available port
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let server_worker = Arc::clone(&worker);
+    let addr_str = local_addr.to_string();
+    let srv_handle = tokio::spawn(async move {
+        let _ = server_worker.run_server(&addr_str).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let stream = TcpStream::connect(local_addr)
+        .await
+        .expect("Connect to TCP worker");
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut lines = BufReader::new(reader).lines();
+
+    let assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "tcp_echo_task".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "echo tcp_success_report".to_string(),
+        env: HashMap::new(),
+        cache_key: "cache_tcp_123".to_string(),
+        timeout_ms: 5000,
+    };
+
+    let mut msg = serde_json::to_string(&assignment).unwrap();
+    msg.push('\n');
+    writer.write_all(msg.as_bytes()).await.unwrap();
+    writer.flush().await.unwrap();
+
+    let resp_line = lines.next_line().await.unwrap().expect("Response line");
+    let report: onaji_protocol::messages::worker::TaskExecutionReport =
+        serde_json::from_str(&resp_line).expect("Valid TaskExecutionReport JSON");
+
+    assert!(report.success);
+    assert_eq!(report.task_id, "tcp_echo_task");
+    assert_eq!(report.exit_code, Some(0));
+    assert!(report.stdout.contains("tcp_success_report"));
+
+    srv_handle.abort();
+}

@@ -2,7 +2,7 @@ use crate::cli::{SecurityCommands, WorkerCommands};
 use crate::util::resolve_workspace_root;
 use std::path::Path;
 
-pub fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
+pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
     let workspace_root = resolve_workspace_root(config_path);
 
     match cmd {
@@ -15,8 +15,11 @@ pub fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
             toolchains.insert("rust".to_string(), "installed".to_string());
             toolchains.insert("sh".to_string(), "installed".to_string());
 
-            let worker =
-                onaji_core::remote::WorkerDaemon::new(&worker_id, &sandbox_dir, toolchains);
+            let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
+                &worker_id,
+                &sandbox_dir,
+                toolchains,
+            ));
             println!("=== Onaji Remote Worker Daemon ===");
             println!("Worker ID:   {}", worker.registration.worker_id);
             println!(
@@ -25,7 +28,12 @@ pub fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
             );
             println!("Listening:   {}", listen);
             println!("Sandbox Dir: {}", sandbox_dir.display());
-            println!("Status:      READY (Accepting task assignments)");
+            println!("Status:      READY (Accepting task assignments)\n");
+
+            if let Err(err) = worker.run_server(&listen).await {
+                eprintln!("✗ Worker daemon error on {}: {}", listen, err);
+                std::process::exit(1);
+            }
         }
         WorkerCommands::Status => {
             println!("=== Local Worker Status ===");

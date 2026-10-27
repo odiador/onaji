@@ -163,3 +163,47 @@ fn test_environment_isolation_and_sandboxed_execution() {
     assert_eq!(code2, 0);
     assert_eq!(stdout2.trim(), "TASK_VAR=custom_value");
 }
+
+#[tokio::test]
+async fn test_sandboxed_runner_async_timeout_enforcement() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sandbox_root = temp_dir.path();
+
+    let policy = SecurityPolicy {
+        allow_commands: vec![
+            "sh".to_string(),
+            "cmd".to_string(),
+            "sleep".to_string(),
+            "timeout".to_string(),
+        ],
+        deny_commands: vec!["sudo".to_string()],
+        allow_network: false,
+        allowed_env: vec!["PATH".to_string()],
+        memory_limit_mb: Some(512),
+        timeout_secs: Some(1),
+    };
+
+    let runner = SandboxedProcessRunner::new(sandbox_root, PolicyChecker::new(policy));
+
+    let slow_action = Action::Command {
+        run: "sleep 5".to_string(),
+        working_dir: None,
+        env: HashMap::new(),
+    };
+
+    let start = std::time::Instant::now();
+    let res = runner
+        .execute_action_async(&slow_action, &HashMap::new())
+        .await;
+
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    match err {
+        onaji_core::runner::RunnerError::ExecutionFailed { code, stderr } => {
+            assert_eq!(code, Some(124));
+            assert!(stderr.contains("exceeded security policy limit of 1 seconds"));
+        }
+        _ => panic!("Expected ExecutionFailed timeout, got {:?}", err),
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+}

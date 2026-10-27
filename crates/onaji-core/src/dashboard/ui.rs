@@ -101,6 +101,18 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         <span id="tasks-count">-</span>
       </div>
       <div class="stat-row">
+        <span>Cached Task Records</span>
+        <span id="cached-tasks-count" style="font-weight:600;color:var(--cached)">-</span>
+      </div>
+      <div class="stat-row">
+        <span>CAS Artifact Packages</span>
+        <span id="cas-count" style="font-weight:600">-</span>
+      </div>
+      <div class="stat-row">
+        <span>CAS Disk Footprint</span>
+        <span id="cas-size" style="font-weight:600">-</span>
+      </div>
+      <div class="stat-row">
         <span>Monitored Resources</span>
         <span id="resources-count">-</span>
       </div>
@@ -108,6 +120,14 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   </div>
 
   <script>
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+    }
+
     async function updateDashboard() {
       try {
         const statusRes = await fetch('/api/status');
@@ -121,6 +141,15 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
           }
           if (status.resources_count !== undefined) {
             document.getElementById('resources-count').innerText = status.resources_count;
+          }
+          if (status.cached_tasks_count !== undefined) {
+            document.getElementById('cached-tasks-count').innerText = status.cached_tasks_count;
+          }
+          if (status.cas_artifacts_count !== undefined) {
+            document.getElementById('cas-count').innerText = status.cas_artifacts_count + ' packages';
+          }
+          if (status.cas_size_bytes !== undefined) {
+            document.getElementById('cas-size').innerText = formatBytes(status.cas_size_bytes);
           }
           if (status.cache_hit_ratio !== undefined) {
             const pct = (status.cache_hit_ratio * 100).toFixed(1) + '%';
