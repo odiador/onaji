@@ -79,7 +79,7 @@ async fn main() {
             output,
         } => handle_impact(&cli.config, &resource, ci, output),
         Commands::Plugin { command } => handle_plugin(&cli.config, command).await,
-        Commands::Workspace { command } => handle_workspace(&cli.config, command),
+        Commands::Workspace { command } => handle_workspace(&cli.config, command).await,
         Commands::Security { command } => handle_security(&cli.config, command),
         Commands::Release { command } => handle_release(command),
         Commands::Dashboard { port, open } => handle_dashboard(&cli.config, port, open).await,

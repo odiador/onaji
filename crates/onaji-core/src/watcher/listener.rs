@@ -52,25 +52,41 @@ impl ReactiveWatcher {
 
         let mut normalizer = EventNormalizer::new(&self.workspace_root);
         let mut file_resources = Vec::new();
+        let mut http_resources = Vec::new();
 
         for res_id in dag.resource_indices.keys() {
             if let Some(res) = dag.get_resource(res_id) {
-                if let ResourceType::File { path, .. } = &res.resource_type {
-                    file_resources.push(res);
-                    let full_path = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        self.workspace_root.join(path)
-                    };
-
-                    if full_path.exists() {
-                        let mode = if full_path.is_dir() {
-                            RecursiveMode::Recursive
+                match &res.resource_type {
+                    ResourceType::File { path, .. } => {
+                        file_resources.push(res);
+                        let full_path = if path.is_absolute() {
+                            path.clone()
                         } else {
-                            RecursiveMode::NonRecursive
+                            self.workspace_root.join(path)
                         };
-                        let _ = debouncer.watcher().watch(&full_path, mode);
+
+                        if full_path.exists() {
+                            let mode = if full_path.is_dir() {
+                                RecursiveMode::Recursive
+                            } else {
+                                RecursiveMode::NonRecursive
+                            };
+                            let _ = debouncer.watcher().watch(&full_path, mode);
+                        }
                     }
+                    ResourceType::Http {
+                        url,
+                        interval_ms,
+                        headers,
+                    } => {
+                        http_resources.push((
+                            res.id.clone(),
+                            url.clone(),
+                            *interval_ms,
+                            headers.clone(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -105,7 +121,27 @@ impl ReactiveWatcher {
 
         let (async_tx, async_rx): (Sender<Event>, Receiver<Event>) = tokio_channel(100);
 
+        // Hilos Tokio en background para sondeo periódico de recursos HTTP
+        for (res_id, url, interval_ms, headers) in http_resources {
+            let tx = async_tx.clone();
+            let effective_interval = Duration::from_millis(interval_ms.max(100));
+            tokio::spawn(async move {
+                let mut poller = crate::http::HttpPoller::new();
+                let mut interval = tokio::time::interval(effective_interval);
+                loop {
+                    interval.tick().await;
+                    let outcome = poller.poll_resource(&res_id, &url, &headers).await;
+                    for event in outcome.emitted_events {
+                        if tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+
         // Hilo dedicado para consumir eventos del debouncer y normalizarlos
+        let fs_tx = async_tx.clone();
         std::thread::spawn(move || {
             // Mantenemos el debouncer vivo en este hilo
             let _debouncer = debouncer;
@@ -116,7 +152,9 @@ impl ReactiveWatcher {
                         for debounced_event in events {
                             let norm_res = normalizer.normalize_fs_event(&debounced_event.path);
                             if let NormalizationResult::Changed(event) = norm_res {
-                                let _ = async_tx.blocking_send(event);
+                                if fs_tx.blocking_send(event).is_err() {
+                                    return;
+                                }
                             }
                         }
                     }

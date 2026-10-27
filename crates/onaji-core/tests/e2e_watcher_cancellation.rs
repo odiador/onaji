@@ -185,3 +185,48 @@ tasks:
     assert_eq!(new_dag.task_indices.len(), 2);
     assert!(new_dag.get_task(&TaskId::new("build_v2")).is_some());
 }
+
+#[tokio::test]
+async fn test_watcher_http_resource_polling_emits_event() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let response =
+                "HTTP/1.1 200 OK\r\nETag: \"etag-v1\"\r\nContent-Length: 13\r\n\r\n{\"version\":1}";
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+    });
+
+    let yaml = format!(
+        r#"
+name: http-watch-test
+version: "1.0"
+resources:
+  remote_api:
+    type: http
+    url: "http://{}"
+    interval_ms: 100
+tasks:
+  sync_api:
+    inputs: [remote_api]
+    run: "echo sync"
+"#,
+        local_addr
+    );
+
+    let (_, dag) = ConfigLoader::load_from_str(&yaml).unwrap();
+    let watcher = onaji_core::watcher::ReactiveWatcher::new(std::env::temp_dir());
+    let mut rx = watcher
+        .start_watching(&dag, Duration::from_millis(50))
+        .unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("Received HTTP watcher event")
+        .expect("Event is Some");
+
+    assert_eq!(event.resource_id.as_str(), "remote_api");
+}

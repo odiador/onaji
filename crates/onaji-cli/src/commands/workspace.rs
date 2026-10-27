@@ -2,7 +2,7 @@ use crate::cli::WorkspaceCommands;
 use crate::util::resolve_workspace_root;
 use std::path::Path;
 
-pub fn handle_workspace(config_path: &Path, cmd: WorkspaceCommands) {
+pub async fn handle_workspace(config_path: &Path, cmd: WorkspaceCommands) {
     let workspace_root = resolve_workspace_root(config_path);
 
     // Try loading monorepo workspaces
@@ -140,6 +140,89 @@ pub fn handle_workspace(config_path: &Path, cmd: WorkspaceCommands) {
                     eprintln!("✗ Resource or workspace not found in graph.");
                     std::process::exit(1);
                 }
+            }
+        }
+        WorkspaceCommands::Run {
+            workspace,
+            fail_fast,
+        } => {
+            let target_workspaces: Vec<&onaji_core::workspace::Workspace> =
+                if let Some(ws_name) = &workspace {
+                    let ws_id = onaji_core::workspace::WorkspaceId::new(ws_name);
+                    match multi_graph.workspaces.get(&ws_id) {
+                        Some(ws) => vec![ws],
+                        None => {
+                            eprintln!("✗ Workspace '{}' not found in monorepo manifest.", ws_name);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    multi_graph.workspaces.values().collect()
+                };
+
+            let mut all_passed = true;
+            for ws in target_workspaces {
+                println!("=== Running Tasks in Workspace: [{}] ===", ws.id);
+                let tasks: Vec<onaji_core::domain::TaskId> =
+                    ws.dag.task_indices.keys().cloned().collect();
+
+                let mut cache = onaji_core::cache::ExecutionCache::load_or_new(&ws.root_dir);
+                let mut scheduler =
+                    onaji_core::scheduler::TaskScheduler::new(&ws.dag, &ws.root_dir, &mut cache)
+                        .with_fail_fast(fail_fast);
+
+                match scheduler.execute_tasks(&tasks).await {
+                    Ok(summary) => {
+                        for res in &summary.results {
+                            match res.state {
+                                onaji_core::cache::TaskState::Success => {
+                                    println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms);
+                                }
+                                onaji_core::cache::TaskState::Cached => {
+                                    println!("  ⚡ {:<26}   cached", res.task_id);
+                                }
+                                onaji_core::cache::TaskState::Blocked => {
+                                    println!("  ○ {:<26}  blocked", res.task_id);
+                                }
+                                onaji_core::cache::TaskState::Failed => {
+                                    println!(
+                                        "  ✗ {:<26}   failed (exit code: {:?})",
+                                        res.task_id, res.exit_code
+                                    );
+                                    if !res.stderr.is_empty() {
+                                        for line in res.stderr.lines() {
+                                            println!("      | {}", line);
+                                        }
+                                    }
+                                }
+                                _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                            }
+                        }
+                        let _ = cache.save(&ws.root_dir);
+                        if !summary.success {
+                            all_passed = false;
+                            if fail_fast {
+                                eprintln!(
+                                    "\n✗ Aborting monorepo execution due to task failure in workspace '{}'.",
+                                    ws.id
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("✗ Execution error in workspace '{}': {}", ws.id, err);
+                        all_passed = false;
+                        if fail_fast {
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                println!();
+            }
+
+            if !all_passed {
+                std::process::exit(1);
             }
         }
     }

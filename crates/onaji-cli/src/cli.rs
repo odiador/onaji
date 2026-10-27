@@ -337,6 +337,19 @@ pub enum WorkspaceCommands {
         #[arg(short, long, help = "Originating resource ID")]
         resource: String,
     },
+
+    /// Execute tasks in a specific workspace or across all monorepo workspaces
+    Run {
+        #[arg(
+            short,
+            long,
+            help = "Target specific workspace ID (runs all if omitted)"
+        )]
+        workspace: Option<String>,
+
+        #[arg(long, help = "Stop execution immediately on first task failure")]
+        fail_fast: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
