@@ -36,3 +36,5 @@ tempfile = "3.17"
 wasmtime = "20.0"
 wat = "1.200"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+tar = "0.4"
+zstd = "0.13"

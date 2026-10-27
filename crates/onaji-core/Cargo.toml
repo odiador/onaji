@@ -24,6 +24,8 @@ async-trait = { workspace = true }
 wasmtime = { workspace = true }
 wat = { workspace = true }
 ed25519-dalek = { workspace = true }
+tar = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

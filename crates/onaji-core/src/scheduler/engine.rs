@@ -374,54 +374,88 @@ impl<'a> TaskScheduler<'a> {
     }
 
     fn restore_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) -> bool {
-        let cas_dir = workspace_root
-            .join(".onaji")
-            .join("cache")
-            .join("cas")
-            .join(cache_key.as_str());
-        if !cas_dir.exists() {
-            return false;
+        let cas_dir = workspace_root.join(".onaji").join("cache").join("cas");
+        let archive_path = cas_dir.join(format!("{}.tar.zst", cache_key.as_str()));
+
+        // 1. Descompresión rápida desde archivo comprimido Zstandard TAR (.tar.zst)
+        if archive_path.exists() {
+            if let Ok(file) = std::fs::File::open(&archive_path) {
+                if let Ok(decoder) = zstd::Decoder::new(file) {
+                    let mut archive = tar::Archive::new(decoder);
+                    if archive.unpack(workspace_root).is_ok() {
+                        let all_present = paths.iter().all(|p| workspace_root.join(p).exists());
+                        if all_present {
+                            return true;
+                        }
+                    }
+                }
+            }
         }
 
-        for rel_path in paths {
-            let src = cas_dir.join(rel_path);
-            let dst = workspace_root.join(rel_path);
-            if !src.exists() {
-                return false;
-            }
-            if let Some(parent) = dst.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if src.is_dir() {
-                if copy_dir_all(&src, &dst).is_err() {
+        // 2. Compatibilidad hacia atrás con directorios planos no comprimidos
+        let uncompressed_dir = cas_dir.join(cache_key.as_str());
+        if uncompressed_dir.exists() {
+            for rel_path in paths {
+                let src = uncompressed_dir.join(rel_path);
+                let dst = workspace_root.join(rel_path);
+                if !src.exists() {
                     return false;
                 }
-            } else if std::fs::copy(&src, &dst).is_err() {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn save_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) {
-        let cas_dir = workspace_root
-            .join(".onaji")
-            .join("cache")
-            .join("cas")
-            .join(cache_key.as_str());
-        for rel_path in paths {
-            let src = workspace_root.join(rel_path);
-            let dst = cas_dir.join(rel_path);
-            if src.exists() {
                 if let Some(parent) = dst.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 if src.is_dir() {
-                    let _ = copy_dir_all(&src, &dst);
-                } else {
-                    let _ = std::fs::copy(&src, &dst);
+                    if copy_dir_all(&src, &dst).is_err() {
+                        return false;
+                    }
+                } else if std::fs::copy(&src, &dst).is_err() {
+                    return false;
                 }
             }
+            return true;
+        }
+
+        false
+    }
+
+    fn save_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) {
+        let cas_dir = workspace_root.join(".onaji").join("cache").join("cas");
+        if std::fs::create_dir_all(&cas_dir).is_err() {
+            return;
+        }
+
+        let archive_path = cas_dir.join(format!("{}.tar.zst", cache_key.as_str()));
+        let tmp_path = cas_dir.join(format!(
+            ".{}.{}.tar.zst.tmp",
+            cache_key.as_str(),
+            std::process::id()
+        ));
+
+        let res: Result<(), Box<dyn std::error::Error>> = (|| {
+            let file = std::fs::File::create(&tmp_path)?;
+            let encoder = zstd::Encoder::new(file, 3)?.auto_finish();
+            let mut builder = tar::Builder::new(encoder);
+
+            for rel_path in paths {
+                let src = workspace_root.join(rel_path);
+                if src.exists() {
+                    let rel_clean = rel_path.strip_prefix("./").unwrap_or(rel_path);
+                    if src.is_dir() {
+                        builder.append_dir_all(rel_clean, &src)?;
+                    } else if src.is_file() {
+                        let mut f = std::fs::File::open(&src)?;
+                        builder.append_file(rel_clean, &mut f)?;
+                    }
+                }
+            }
+            builder.finish()?;
+            Ok(())
+        })();
+
+        if res.is_ok() {
+            let _ = std::fs::rename(&tmp_path, &archive_path);
+        } else {
+            let _ = std::fs::remove_file(&tmp_path);
         }
     }
 }
