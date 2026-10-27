@@ -29,15 +29,51 @@ pub async fn handle_rpc(
     config_path: &Path,
     method: String,
     params_str: Option<String>,
-    _socket: Option<PathBuf>,
+    socket: Option<PathBuf>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
-    let dispatcher = onaji_core::Dispatcher::new(&workspace_root);
-
     let parsed_params: Option<serde_json::Value> =
         params_str.and_then(|s| serde_json::from_str(&s).ok());
     let req = onaji_protocol::messages::RpcRequest::new(1, method, parsed_params);
 
+    #[cfg(unix)]
+    {
+        let target_sock = socket.or_else(|| {
+            let default_sock = workspace_root.join(".onaji").join("daemon.sock");
+            if default_sock.exists() {
+                Some(default_sock)
+            } else {
+                None
+            }
+        });
+
+        if let Some(sock_path) = target_sock {
+            if sock_path.exists() {
+                if let Ok(stream) = tokio::net::UnixStream::connect(&sock_path).await {
+                    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                    let (reader, mut writer) = tokio::io::split(stream);
+                    let mut lines = BufReader::new(reader).lines();
+                    let mut req_str = serde_json::to_string(&req).unwrap_or_default();
+                    req_str.push('\n');
+                    if writer.write_all(req_str.as_bytes()).await.is_ok()
+                        && writer.flush().await.is_ok()
+                    {
+                        if let Ok(Some(resp_line)) = lines.next_line().await {
+                            if let Ok(resp) = serde_json::from_str::<
+                                onaji_protocol::messages::RpcResponse,
+                            >(&resp_line)
+                            {
+                                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let dispatcher = onaji_core::Dispatcher::new(&workspace_root);
     let resp = dispatcher.dispatch_request(&req).await;
     println!("{}", serde_json::to_string_pretty(&resp).unwrap());
 }

@@ -165,3 +165,45 @@ async fn test_remote_worker_timeout_enforcement() {
     assert_eq!(report.exit_code, Some(124));
     assert!(report.stderr.contains("Remote task timed out after 50ms"));
 }
+
+#[tokio::test]
+async fn test_remote_backend_dynamic_task_timeout() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    let worker = Arc::new(WorkerDaemon::new(
+        "worker-node-1",
+        root.join("sandbox"),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    ));
+    coordinator.register_worker(worker);
+    let backend = RemoteExecutionBackend::new(coordinator);
+
+    let slow_task = Task {
+        id: TaskId::new("sleep_task"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "sleep 2".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: Some(1), // 1 second timeout -> mapped to 1000ms
+        retries: 0,
+    };
+
+    let start = std::time::Instant::now();
+    let res = backend
+        .execute_task(&slow_task, None, &HashMap::new())
+        .await
+        .unwrap();
+
+    assert_eq!(res.state, onaji_core::cache::TaskState::Failed);
+    assert_eq!(res.exit_code, Some(124));
+    assert!(res.stderr.contains("Remote task timed out after 1000ms"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}

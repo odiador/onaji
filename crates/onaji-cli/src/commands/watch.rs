@@ -37,7 +37,11 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
     println!("\nWatching for changes... (Press Ctrl+C to stop)\n");
 
     let watcher = ReactiveWatcher::new(&workspace_root);
-    let mut rx = match watcher.start_watching(&dag, Duration::from_millis(debounce_ms)) {
+    let mut rx = match watcher.start_watching_with_manifest(
+        &dag,
+        Some(config_path),
+        Duration::from_millis(debounce_ms),
+    ) {
         Ok(receiver) => receiver,
         Err(err) => {
             eprintln!("✗ Failed to start filesystem watcher: {}", err);
@@ -45,7 +49,7 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
         }
     };
 
-    let dag = std::sync::Arc::new(dag);
+    let mut dag = std::sync::Arc::new(dag);
     let workspace_root = std::sync::Arc::new(workspace_root);
     let cache = std::sync::Arc::new(tokio::sync::Mutex::new(ExecutionCache::load_or_new(
         &workspace_root,
@@ -80,6 +84,29 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
                 handle.abort();
                 let _ = handle.await;
             }
+        }
+
+        if event.resource_id.as_str() == onaji_core::watcher::MANIFEST_RESOURCE_ID {
+            println!("🔄 [watch] Configuration manifest changed — hot-reloading DAG...");
+            match ConfigLoader::load_from_file(config_path) {
+                Ok((new_manifest, new_dag)) => {
+                    println!(
+                        "✓ Successfully reloaded manifest '{}': {} tasks, {} resources.",
+                        new_manifest.name,
+                        new_dag.task_indices.len(),
+                        new_dag.resource_indices.len()
+                    );
+                    dag = std::sync::Arc::new(new_dag);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "✗ Syntax or semantic error in manifest '{}': {}. Keeping previous DAG.",
+                        config_path.display(),
+                        err
+                    );
+                }
+            }
+            continue;
         }
 
         println!("---------------------------------------------------------------");

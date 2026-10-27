@@ -46,8 +46,20 @@ async fn main() {
             uncommitted,
             tests,
             run,
+            fail_fast,
             output,
-        } => handle_affected(&cli.config, &since, uncommitted, tests, run, output).await,
+        } => {
+            handle_affected(
+                &cli.config,
+                &since,
+                uncommitted,
+                tests,
+                run,
+                fail_fast,
+                output,
+            )
+            .await
+        }
         Commands::Explain { task } => handle_explain(&cli.config, &task),
         Commands::Worker { command } => handle_worker(&cli.config, command),
         Commands::Daemon { socket, stdio } => handle_daemon(&cli.config, socket, stdio).await,

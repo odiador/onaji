@@ -483,6 +483,7 @@ pub async fn handle_affected(
     include_uncommitted: bool,
     tests_only: bool,
     execute_run: bool,
+    fail_fast: bool,
     output: OutputFormat,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
@@ -567,34 +568,123 @@ pub async fn handle_affected(
     }
 
     if report.affected_tasks.is_empty() {
-        println!(
-            "○ No affected tasks to run since '{}'. Everything is up to date.",
-            since_ref
-        );
+        if output == OutputFormat::Json {
+            let json = serde_json::json!({
+                "success": true,
+                "since": since_ref,
+                "affected_tasks": [],
+                "message": "No affected tasks to run"
+            });
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+        } else {
+            println!(
+                "○ No affected tasks to run since '{}'. Everything is up to date.",
+                since_ref
+            );
+        }
         return;
     }
 
-    println!(
-        "Running {} affected tasks (since '{}')...\n",
-        report.affected_tasks.len(),
-        since_ref
-    );
+    if output == OutputFormat::Text {
+        println!(
+            "Running {} affected tasks (since '{}')...\n",
+            report.affected_tasks.len(),
+            since_ref
+        );
+    }
+
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
-    let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
+    let mut scheduler =
+        TaskScheduler::new(&dag, &workspace_root, &mut cache).with_fail_fast(fail_fast);
     match scheduler.execute_tasks(&report.affected_tasks).await {
         Ok(summary) => {
-            for res in &summary.results {
-                match res.state {
-                    TaskState::Success => {
-                        println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms)
+            match output {
+                OutputFormat::Github => {
+                    for res in &summary.results {
+                        match res.state {
+                            TaskState::Success => {
+                                println!(
+                                    "::notice title=Task Succeeded::{:<24} ({}ms)",
+                                    res.task_id, res.duration_ms
+                                );
+                            }
+                            TaskState::Cached => {
+                                println!(
+                                    "::notice title=Task Cached::{:<24} ⚡ (incremental cache hit)",
+                                    res.task_id
+                                );
+                            }
+                            TaskState::Blocked => {
+                                println!(
+                                    "::warning title=Task Blocked::{:<24} ○ (upstream causal failure)",
+                                    res.task_id
+                                );
+                            }
+                            TaskState::Failed => {
+                                println!(
+                                    "::error title=Task Failed::{:<24} (exit code: {:?})",
+                                    res.task_id, res.exit_code
+                                );
+                                if !res.stderr.is_empty() {
+                                    for line in res.stderr.lines() {
+                                        println!("::error::{}", line);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                    TaskState::Cached => println!("  ⚡ {:<26}   cached", res.task_id),
-                    TaskState::Blocked => println!("  ○ {:<26}  blocked", res.task_id),
-                    TaskState::Failed => println!(
-                        "  ✗ {:<26}   failed (exit code: {:?})",
-                        res.task_id, res.exit_code
-                    ),
-                    _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                }
+                OutputFormat::Json => {
+                    let results_json: Vec<_> = summary
+                        .results
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "task_id": r.task_id.as_str(),
+                                "state": format!("{:?}", r.state),
+                                "exit_code": r.exit_code,
+                                "duration_ms": r.duration_ms,
+                                "stdout": r.stdout,
+                                "stderr": r.stderr,
+                            })
+                        })
+                        .collect();
+                    let json = serde_json::json!({
+                        "success": summary.success,
+                        "total_duration_ms": summary.total_duration_ms,
+                        "since": since_ref,
+                        "results": results_json,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                }
+                OutputFormat::Text => {
+                    for res in &summary.results {
+                        match res.state {
+                            TaskState::Success => {
+                                println!("  ✓ {:<26} {:>6} ms", res.task_id, res.duration_ms)
+                            }
+                            TaskState::Cached => println!("  ⚡ {:<26}   cached", res.task_id),
+                            TaskState::Blocked => println!("  ○ {:<26}  blocked", res.task_id),
+                            TaskState::Failed => {
+                                println!(
+                                    "  ✗ {:<26}   failed (exit code: {:?})",
+                                    res.task_id, res.exit_code
+                                );
+                                if !res.stderr.is_empty() {
+                                    for line in res.stderr.lines() {
+                                        println!("      | {}", line);
+                                    }
+                                }
+                            }
+                            _ => println!("  ? {:<26}  {:?}", res.task_id, res.state),
+                        }
+                    }
+                    println!(
+                        "\nTotal Time: {} ms | Status: {}\n",
+                        summary.total_duration_ms,
+                        if summary.success { "PASSED" } else { "FAILED" }
+                    );
                 }
             }
             let _ = cache.save(&workspace_root);

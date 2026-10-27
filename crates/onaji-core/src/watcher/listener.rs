@@ -1,5 +1,5 @@
 use super::normalizer::{EventNormalizer, NormalizationResult};
-use crate::domain::{Event, ResourceType};
+use crate::domain::{Event, Resource, ResourceType};
 use crate::graph::DependencyGraph;
 use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
@@ -8,6 +8,8 @@ use std::sync::mpsc::channel as std_channel;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc::{channel as tokio_channel, Receiver, Sender};
+
+pub const MANIFEST_RESOURCE_ID: &str = "__onaji_manifest__";
 
 #[derive(Debug, Error)]
 pub enum WatcherError {
@@ -33,6 +35,16 @@ impl ReactiveWatcher {
     pub fn start_watching(
         &self,
         dag: &DependencyGraph,
+        debounce_duration: Duration,
+    ) -> Result<Receiver<Event>, WatcherError> {
+        self.start_watching_with_manifest(dag, None, debounce_duration)
+    }
+
+    /// Inicia el listener de filesystem con soporte opcional de observación para recarga en caliente del manifiesto.
+    pub fn start_watching_with_manifest(
+        &self,
+        dag: &DependencyGraph,
+        manifest_path: Option<&Path>,
         debounce_duration: Duration,
     ) -> Result<Receiver<Event>, WatcherError> {
         let (std_tx, std_rx) = std_channel();
@@ -63,7 +75,33 @@ impl ReactiveWatcher {
             }
         }
 
-        normalizer.register_resources(file_resources);
+        let mut owned_manifest_res = None;
+        if let Some(m_path) = manifest_path {
+            let full_manifest = if m_path.is_absolute() {
+                m_path.to_path_buf()
+            } else {
+                self.workspace_root.join(m_path)
+            };
+            if full_manifest.exists() {
+                let _ = debouncer
+                    .watcher()
+                    .watch(&full_manifest, RecursiveMode::NonRecursive);
+                owned_manifest_res = Some(Resource::new(
+                    MANIFEST_RESOURCE_ID,
+                    ResourceType::File {
+                        path: full_manifest,
+                        debounce_ms: debounce_duration.as_millis() as u64,
+                    },
+                ));
+            }
+        }
+
+        let mut all_resources = file_resources;
+        if let Some(m_res) = &owned_manifest_res {
+            all_resources.push(m_res);
+        }
+
+        normalizer.register_resources(all_resources);
 
         let (async_tx, async_rx): (Sender<Event>, Receiver<Event>) = tokio_channel(100);
 

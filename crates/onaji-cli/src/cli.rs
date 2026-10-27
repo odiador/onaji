@@ -131,6 +131,9 @@ pub enum Commands {
         )]
         run: bool,
 
+        #[arg(long, help = "Stop execution immediately on first task failure")]
+        fail_fast: bool,
+
         #[arg(
             short,
             long,

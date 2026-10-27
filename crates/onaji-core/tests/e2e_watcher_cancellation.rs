@@ -133,3 +133,55 @@ tasks:
     assert_eq!(summary.results.len(), 1);
     assert_eq!(summary.results[0].task_id, TaskId::new("quick_build"));
 }
+
+#[tokio::test]
+async fn test_watcher_manifest_hot_reload_event_emission() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let manifest_path = root.join("onaji.yaml");
+
+    let initial_yaml = r#"
+name: test-project
+version: "1.0"
+tasks:
+  build_v1:
+    run: "echo v1"
+"#;
+    std::fs::write(&manifest_path, initial_yaml).unwrap();
+
+    let (_, dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    let watcher = onaji_core::watcher::ReactiveWatcher::new(root);
+    let mut rx = watcher
+        .start_watching_with_manifest(&dag, Some(&manifest_path), Duration::from_millis(50))
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // Mutate onaji.yaml
+    let updated_yaml = r#"
+name: test-project
+version: "1.0"
+tasks:
+  build_v1:
+    run: "echo v1"
+  build_v2:
+    run: "echo v2"
+"#;
+    std::fs::write(&manifest_path, updated_yaml).unwrap();
+
+    // Expect MANIFEST_RESOURCE_ID event
+    let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("Received watcher event")
+        .expect("Event is Some");
+
+    assert_eq!(
+        event.resource_id.as_str(),
+        onaji_core::watcher::MANIFEST_RESOURCE_ID
+    );
+
+    // Verify DAG reload
+    let (_, new_dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    assert_eq!(new_dag.task_indices.len(), 2);
+    assert!(new_dag.get_task(&TaskId::new("build_v2")).is_some());
+}

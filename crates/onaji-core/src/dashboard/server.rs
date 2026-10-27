@@ -6,6 +6,22 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+fn calculate_dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                } else if meta.is_dir() {
+                    total += calculate_dir_size(&entry.path());
+                }
+            }
+        }
+    }
+    total
+}
+
 pub struct DashboardServer {
     pub port: u16,
     pub workspace_root: PathBuf,
@@ -48,22 +64,43 @@ impl DashboardServer {
                             .starts_with("GET /api/status")
                         {
                             let manifest_path = root_ref.join("onaji.yaml");
-                            let body = if let Ok((manifest, dag)) =
-                                crate::config::ConfigLoader::load_from_file(&manifest_path)
-                            {
-                                serde_json::json!({
-                                    "status": "ok",
-                                    "version": env!("CARGO_PKG_VERSION"),
-                                    "project_name": manifest.name,
-                                    "tasks_count": dag.task_indices.len(),
-                                    "resources_count": dag.resource_indices.len(),
-                                    "workers_online": 2,
-                                    "cache_hit_ratio": 0.884
-                                })
-                                .to_string()
+                            let cache = crate::cache::ExecutionCache::load_or_new(&root_ref);
+                            let cas_dir = root_ref.join(".onaji").join("cache").join("cas");
+                            let (cas_count, cas_size_bytes) = if cas_dir.exists() {
+                                let count =
+                                    std::fs::read_dir(&cas_dir).map(|d| d.count()).unwrap_or(0);
+                                let size = calculate_dir_size(&cas_dir);
+                                (count, size)
                             } else {
-                                r#"{"status":"ok","version":"0.1.0","workers_online":2,"cache_hit_ratio":0.884}"#.to_string()
+                                (0, 0)
                             };
+
+                            let (project_name, tasks_count, resources_count) =
+                                if let Ok((manifest, dag)) =
+                                    crate::config::ConfigLoader::load_from_file(&manifest_path)
+                                {
+                                    (
+                                        manifest.name,
+                                        dag.task_indices.len(),
+                                        dag.resource_indices.len(),
+                                    )
+                                } else {
+                                    ("Unknown".to_string(), 0, 0)
+                                };
+
+                            let body = serde_json::json!({
+                                "status": "ok",
+                                "version": env!("CARGO_PKG_VERSION"),
+                                "project_name": project_name,
+                                "tasks_count": tasks_count,
+                                "resources_count": resources_count,
+                                "cached_tasks_count": cache.len(),
+                                "cas_artifacts_count": cas_count,
+                                "cas_size_bytes": cas_size_bytes,
+                                "workers_online": 1,
+                                "cache_hit_ratio": if cache.is_empty() { 0.0 } else { 1.0 },
+                            })
+                            .to_string();
 
                             ("HTTP/1.1 200 OK", "application/json", body)
                         } else if request_str.starts_with("GET /api/graph") {

@@ -61,6 +61,11 @@ impl ExecutionBackend for RemoteExecutionBackend {
             Action::Builtin { adapter, .. } => format!("builtin:{}", adapter),
         };
 
+        let timeout_ms = task
+            .timeout_secs
+            .map(|s| s.saturating_mul(1000))
+            .unwrap_or(30000);
+
         let assignment = onaji_protocol::messages::worker::TaskAssignment {
             task_id: task.id.to_string(),
             workspace_id: "default".to_string(),
@@ -70,7 +75,7 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 .as_ref()
                 .map(|k| k.to_string())
                 .unwrap_or_default(),
-            timeout_ms: 30000,
+            timeout_ms,
         };
 
         let report = self.coordinator.dispatch_task(assignment).await?;
