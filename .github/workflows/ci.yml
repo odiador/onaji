@@ -21,6 +21,18 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.os }}-
+
       - name: Cargo Format Check
         run: cargo fmt --all -- --check
 
@@ -41,8 +53,31 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo Dependencies & Binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            target/
+          key: cargo-selective-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-selective-
+
+      - name: Cache Onaji Execution Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .onaji/cache
+            examples/contract-driven-flow/.onaji/cache
+          key: onaji-cache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            onaji-cache-${{ runner.os }}-
+
       - name: Build Onaji CLI
         run: cargo build -p onaji-cli
+
+      - name: Verify Workspace Manifest
+        run: ./target/debug/onaji --config examples/contract-driven-flow/onaji.yaml check --output github
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

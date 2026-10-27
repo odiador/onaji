@@ -26,8 +26,20 @@ pub fn handle_hook(config_path: &Path, cmd: HookCommands) {
 
             let hook_script = r#"#!/usr/bin/env sh
 # ONΛJI Automated Pre-Commit Selective Testing Hook
+if command -v onaji >/dev/null 2>&1; then
+    ONAJI_BIN="onaji"
+elif [ -f "$HOME/.cargo/bin/onaji" ]; then
+    ONAJI_BIN="$HOME/.cargo/bin/onaji"
+elif [ -f "./target/release/onaji" ]; then
+    ONAJI_BIN="./target/release/onaji"
+elif [ -f "./target/debug/onaji" ]; then
+    ONAJI_BIN="./target/debug/onaji"
+else
+    ONAJI_BIN="cargo run -q -p onaji-cli --"
+fi
+
 echo "⚡ [onaji-hook] Running selective impact tests for staged/uncommitted changes..."
-onaji affected --since HEAD~1 --uncommitted --run --tests
+$ONAJI_BIN affected --since HEAD~1 --uncommitted --run --tests
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
     echo "✗ [onaji-hook] Pre-commit validation failed. Fix failing tasks before committing."

@@ -101,13 +101,24 @@ tasks:
     fs::remove_file(root.join("output.txt")).unwrap();
     assert!(!root.join("output.txt").exists());
 
-    // Run 3: Physical output missing -> Cache hit must be invalidated and re-executed!
+    // Run 3: Physical output missing -> Restored automatically from CAS!
     let summary3 = TaskScheduler::new(&dag, root, &mut cache)
         .execute_tasks(std::slice::from_ref(&task_id))
         .await
         .unwrap();
     assert!(summary3.success);
-    assert_eq!(summary3.results[0].state, TaskState::Success);
+    assert_eq!(summary3.results[0].state, TaskState::Cached);
+    assert!(root.join("output.txt").exists());
+
+    // Run 4: Delete both output file AND CAS cache -> Must re-execute!
+    fs::remove_file(root.join("output.txt")).unwrap();
+    let _ = fs::remove_dir_all(root.join(".onaji").join("cache").join("cas"));
+    let summary4 = TaskScheduler::new(&dag, root, &mut cache)
+        .execute_tasks(std::slice::from_ref(&task_id))
+        .await
+        .unwrap();
+    assert!(summary4.success);
+    assert_eq!(summary4.results[0].state, TaskState::Success);
     assert!(root.join("output.txt").exists());
 }
 

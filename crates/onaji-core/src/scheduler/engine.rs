@@ -162,8 +162,9 @@ impl<'a> TaskScheduler<'a> {
                 let mut is_hit = self.cache.check_hit(&task.id, &cache_key);
 
                 // Integridad física: Si hay cache hit pero la tarea declaró cache_paths de salida,
-                // verificamos que los archivos físicos existan realmente en disco.
+                // verificamos si existen en disco o los restauramos desde el almacén CAS.
                 if is_hit && !task.cache_paths.is_empty() {
+                    let mut missing_on_disk = false;
                     for rel_path in &task.cache_paths {
                         let full_path = if rel_path.is_absolute() {
                             rel_path.clone()
@@ -171,8 +172,19 @@ impl<'a> TaskScheduler<'a> {
                             self.workspace_root.join(rel_path)
                         };
                         if !full_path.exists() {
-                            is_hit = false;
+                            missing_on_disk = true;
                             break;
+                        }
+                    }
+
+                    if missing_on_disk {
+                        let restored = Self::restore_cas_outputs(
+                            &self.workspace_root,
+                            &cache_key,
+                            &task.cache_paths,
+                        );
+                        if !restored {
+                            is_hit = false;
                         }
                     }
                 }
@@ -260,6 +272,14 @@ impl<'a> TaskScheduler<'a> {
 
                     if exec_result.state == TaskState::Success {
                         if let Some(key) = &exec_result.cache_key {
+                            if !task.cache_paths.is_empty() {
+                                Self::save_cas_outputs(
+                                    &self.workspace_root,
+                                    key,
+                                    &task.cache_paths,
+                                );
+                            }
+
                             self.cache.record_success(
                                 &task.id,
                                 key.clone(),
@@ -307,4 +327,71 @@ impl<'a> TaskScheduler<'a> {
             success: overall_success,
         })
     }
+
+    fn restore_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) -> bool {
+        let cas_dir = workspace_root
+            .join(".onaji")
+            .join("cache")
+            .join("cas")
+            .join(cache_key.as_str());
+        if !cas_dir.exists() {
+            return false;
+        }
+
+        for rel_path in paths {
+            let src = cas_dir.join(rel_path);
+            let dst = workspace_root.join(rel_path);
+            if !src.exists() {
+                return false;
+            }
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if src.is_dir() {
+                if copy_dir_all(&src, &dst).is_err() {
+                    return false;
+                }
+            } else if std::fs::copy(&src, &dst).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn save_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) {
+        let cas_dir = workspace_root
+            .join(".onaji")
+            .join("cache")
+            .join("cas")
+            .join(cache_key.as_str());
+        for rel_path in paths {
+            let src = workspace_root.join(rel_path);
+            let dst = cas_dir.join(rel_path);
+            if src.exists() {
+                if let Some(parent) = dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if src.is_dir() {
+                    let _ = copy_dir_all(&src, &dst);
+                } else {
+                    let _ = std::fs::copy(&src, &dst);
+                }
+            }
+        }
+    }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_child = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest_child)?;
+        } else {
+            std::fs::copy(entry.path(), dest_child)?;
+        }
+    }
+    Ok(())
 }

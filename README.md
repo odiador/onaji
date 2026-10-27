@@ -163,6 +163,11 @@ tasks:
     outputs:
       - android_build_classes
     run: "./gradlew :androidApp:assembleDebug"
+    timeout_secs: 300      # Kill if hangs past 5 minutes (process deadman switch)
+    retries: 2             # Auto-retry on transient flakiness
+    cache:
+      paths:               # Auto-archived to Content-Addressed Storage (CAS)
+        - "build/outputs"
 
   build_docs:
     description: "Generate static documentation site"
@@ -172,6 +177,21 @@ tasks:
       - docs_html
     run: "echo 'Building static docs... OK'"
 ```
+
+### 🛡️ Task Resilience & Physical CAS Output Restoration
+
+- **Process Deadman Switch (`timeout_secs`)**: Tasks specify maximum runtimes. If a process hangs or asks for interactive input, ONΛJI aborts it with exit code `124` and cleanly kills child processes.
+- **Flakiness Recovery (`retries`)**: Configurable exponential retry budget for network/compiler flakiness before flagging pipeline failure.
+- **Automatic Content-Addressed Output Restoration**: Outputs declared in `cache.paths` are stored in Tier 1 CAS (`.onaji/cache/cas/<key>/`). If a developer cleans output directories or switches branches, ONΛJI detects missing files on disk and **restores them in 1 ms** without recompilation.
+- **Atomic Cache Persistence**: Cache metadata writes use atomic temporary file renaming to prevent state corruption during concurrency or process termination.
+
+### 🪝 Automated Git Pre-Commit Hook
+
+Install selective pre-commit testing in one command:
+```bash
+onaji hook install
+```
+On every `git commit`, ONΛJI executes **only the tests and tasks affected by staged or uncommitted files** via causal graph traversal in sub-15ms. If tests fail, the commit is safely intercepted. Works seamlessly across both terminal CLI and graphical Git clients (VS Code, Fork, GitKraken, Sublime Merge).
 
 ### 🧬 Causal DAG Visualization
 
@@ -233,6 +253,7 @@ Micro-benchmarks executed on Apple Silicon (`--release` profile, `opt-level = 3`
 | `onaji workspace <list\|check>`| Multi-workspace monorepo inspection and cross-impact analysis |
 | `onaji plugin <list\|add\|...>`| Manage external WASM / JSON-RPC plugins and lockfile |
 | `onaji clean [--all]` | Clear workspace or global Content-Addressed Storage (CAS) caches |
+| `onaji hook <install\|uninstall>` | Install or remove automated Git pre-commit hook for selective change testing |
 | `onaji completions <shell>` | Generate shell autocomplete scripts (bash, zsh, fish, powershell, elvish) |
 
 ---
