@@ -17,6 +17,7 @@ pub struct TaskScheduler<'a> {
     dag: &'a DependencyGraph,
     workspace_root: PathBuf,
     cache: &'a mut ExecutionCache,
+    fail_fast: bool,
 }
 
 impl<'a> TaskScheduler<'a> {
@@ -29,7 +30,13 @@ impl<'a> TaskScheduler<'a> {
             dag,
             workspace_root: workspace_root.as_ref().to_path_buf(),
             cache,
+            fail_fast: false,
         }
+    }
+
+    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
+        self.fail_fast = fail_fast;
+        self
     }
 
     /// Ejecuta únicamente el conjunto de tareas afectadas por un ImpactReport.
@@ -108,6 +115,27 @@ impl<'a> TaskScheduler<'a> {
         let mut executed_results: HashMap<TaskId, TaskExecutionResult> = HashMap::new();
 
         for wave in waves {
+            if self.fail_fast && !overall_success {
+                for task_id in &wave {
+                    if !executed_results.contains_key(task_id) {
+                        executed_results.insert(
+                            task_id.clone(),
+                            TaskExecutionResult {
+                                task_id: task_id.clone(),
+                                state: TaskState::Blocked,
+                                exit_code: None,
+                                stdout: String::new(),
+                                stderr: "Aborted due to prior task failure (--fail-fast enabled)"
+                                    .to_string(),
+                                duration_ms: 0,
+                                cache_key: None,
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
+
             let mut tasks_to_run_parallel = Vec::new();
 
             for task_id in &wave {
@@ -297,15 +325,27 @@ impl<'a> TaskScheduler<'a> {
                         overall_success = false;
                         self.cache.invalidate(&task.id);
 
-                        // Bloquear causalmente solo a los descendientes transitivos reales en el DAG
-                        if let Some(&task_idx) = self.dag.task_indices.get(&task.id) {
-                            let mut bfs = petgraph::visit::Bfs::new(&self.dag.graph, task_idx);
-                            while let Some(visited_idx) = bfs.next(&self.dag.graph) {
-                                if let Some(crate::graph::dag::GraphNode::Task(downstream_task)) =
-                                    self.dag.graph.node_weight(visited_idx)
+                        if self.fail_fast {
+                            // En modo fail-fast, bloquear todas las tareas restantes del workspace
+                            for remaining_id in &sorted_task_ids {
+                                if remaining_id != &task.id
+                                    && !executed_results.contains_key(remaining_id)
                                 {
-                                    if downstream_task.id != task.id {
-                                        blocked_tasks.insert(downstream_task.id.clone());
+                                    blocked_tasks.insert(remaining_id.clone());
+                                }
+                            }
+                        } else {
+                            // En modo causal (keep-going), bloquear únicamente a los descendientes transitivos reales en el DAG
+                            if let Some(&task_idx) = self.dag.task_indices.get(&task.id) {
+                                let mut bfs = petgraph::visit::Bfs::new(&self.dag.graph, task_idx);
+                                while let Some(visited_idx) = bfs.next(&self.dag.graph) {
+                                    if let Some(crate::graph::dag::GraphNode::Task(
+                                        downstream_task,
+                                    )) = self.dag.graph.node_weight(visited_idx)
+                                    {
+                                        if downstream_task.id != task.id {
+                                            blocked_tasks.insert(downstream_task.id.clone());
+                                        }
                                     }
                                 }
                             }

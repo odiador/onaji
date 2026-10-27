@@ -163,3 +163,106 @@ tasks:
     assert_eq!(summary.results[0].state, TaskState::Success);
     assert!(summary.results[0].stdout.contains("recovered"));
 }
+
+#[tokio::test]
+async fn test_fail_fast_vs_causal_isolation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let manifest_yaml = r#"
+version: "1"
+name: "fail-fast-test"
+
+artifacts:
+  art_a: {}
+  art_seed: {}
+
+tasks:
+  task_seed:
+    inputs: []
+    outputs: [art_seed]
+    run: "echo seed"
+
+  task_fail_a:
+    inputs: []
+    outputs: [art_a]
+    run: "exit 1"
+
+  task_downstream_b:
+    inputs: [art_a]
+    outputs: []
+    run: "echo downstream_ran"
+
+  task_independent_c:
+    inputs: [art_seed]
+    outputs: []
+    run: "echo independent_ran"
+"#;
+
+    let manifest_path = root.join("onaji.yaml");
+    fs::write(&manifest_path, manifest_yaml).unwrap();
+
+    let (_, dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    let task_ids = vec![
+        onaji_core::domain::TaskId::new("task_seed"),
+        onaji_core::domain::TaskId::new("task_fail_a"),
+        onaji_core::domain::TaskId::new("task_downstream_b"),
+        onaji_core::domain::TaskId::new("task_independent_c"),
+    ];
+
+    // Case 1: Default (Keep-going causal mode) -> Independent task C succeeds, only downstream B blocked
+    let mut cache1 = ExecutionCache::new();
+    let summary1 = TaskScheduler::new(&dag, root, &mut cache1)
+        .with_fail_fast(false)
+        .execute_tasks(&task_ids)
+        .await
+        .unwrap();
+
+    assert!(!summary1.success);
+    let res_a1 = summary1
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_fail_a")
+        .unwrap();
+    let res_b1 = summary1
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_downstream_b")
+        .unwrap();
+    let res_c1 = summary1
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_independent_c")
+        .unwrap();
+    assert_eq!(res_a1.state, TaskState::Failed);
+    assert_eq!(res_b1.state, TaskState::Blocked);
+    assert_eq!(res_c1.state, TaskState::Success);
+
+    // Case 2: Fail-Fast mode -> Both downstream B and independent C in later waves are aborted/blocked
+    let mut cache2 = ExecutionCache::new();
+    let summary2 = TaskScheduler::new(&dag, root, &mut cache2)
+        .with_fail_fast(true)
+        .execute_tasks(&task_ids)
+        .await
+        .unwrap();
+
+    assert!(!summary2.success);
+    let res_a2 = summary2
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_fail_a")
+        .unwrap();
+    let res_b2 = summary2
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_downstream_b")
+        .unwrap();
+    let res_c2 = summary2
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "task_independent_c")
+        .unwrap();
+    assert_eq!(res_a2.state, TaskState::Failed);
+    assert_eq!(res_b2.state, TaskState::Blocked);
+    assert_eq!(res_c2.state, TaskState::Blocked);
+}

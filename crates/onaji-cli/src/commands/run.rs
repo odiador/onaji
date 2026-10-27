@@ -15,7 +15,7 @@ pub async fn handle_run(
     tests_filter: bool,
     _ci: bool,
     output: OutputFormat,
-    _fail_fast: bool,
+    fail_fast: bool,
     trace: bool,
     trace_format: OutputFormat,
     trace_output: Option<PathBuf>,
@@ -73,7 +73,8 @@ pub async fn handle_run(
     };
 
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
-    let mut scheduler = TaskScheduler::new(&dag, &workspace_root, &mut cache);
+    let mut scheduler =
+        TaskScheduler::new(&dag, &workspace_root, &mut cache).with_fail_fast(fail_fast);
 
     let tasks_to_run: Vec<onaji_core::domain::TaskId> = if let Some(res_str) = resource_filter {
         let res_id = ResourceId::new(res_str);

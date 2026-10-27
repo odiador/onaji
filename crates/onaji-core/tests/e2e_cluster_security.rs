@@ -2,7 +2,7 @@ use onaji_core::domain::Action;
 use onaji_core::security::{Authenticator, PolicyChecker, SandboxedProcessRunner};
 use onaji_protocol::messages::security::{AuthCredentials, SecurityPolicy, ViolationType};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn test_worker_authentication_tokens_and_mtls_certificates() {
@@ -93,6 +93,26 @@ fn test_security_policy_command_and_path_validation() {
         res_traversal.unwrap_err().violation_type,
         ViolationType::PathTraversal
     );
+
+    // 5. Symlink Traversal Protection
+    let temp_sandbox = tempfile::tempdir().unwrap();
+    let temp_external = tempfile::tempdir().unwrap();
+    let secret_file = temp_external.path().join("secret.txt");
+    std::fs::write(&secret_file, "confidential").unwrap();
+
+    #[cfg(unix)]
+    {
+        let symlink_in_sandbox = temp_sandbox.path().join("symlink_to_external");
+        let _ = std::os::unix::fs::symlink(&secret_file, &symlink_in_sandbox);
+
+        let res_symlink =
+            checker.validate_path(temp_sandbox.path(), Path::new("symlink_to_external"));
+        assert!(res_symlink.is_err());
+        assert_eq!(
+            res_symlink.unwrap_err().violation_type,
+            ViolationType::PathTraversal
+        );
+    }
 }
 
 #[test]

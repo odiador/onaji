@@ -104,7 +104,8 @@ impl ExecutionCache {
         Self::new()
     }
 
-    /// Persiste el estado de la caché en el disco de forma atómica mediante un archivo temporal y rename.
+    /// Persiste el estado de la caché en el disco de forma atómica mediante un archivo temporal y rename,
+    /// protegido por un lock de exclusión mutua para evitar condiciones de carrera entre procesos concurrentes.
     pub fn save(&self, workspace_root: &std::path::Path) -> std::io::Result<()> {
         let path = Self::default_cache_path(workspace_root);
         let parent = match path.parent() {
@@ -113,21 +114,56 @@ impl ExecutionCache {
         };
         std::fs::create_dir_all(parent)?;
 
-        let content =
-            serde_json::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let lock_path = parent.join(".execution_cache.lock");
+        let mut acquired = false;
+        for _ in 0..10 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(_) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) => {
+                    if let Ok(meta) = lock_path.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            if let Ok(elapsed) = modified.elapsed() {
+                                if elapsed > std::time::Duration::from_secs(3) {
+                                    let _ = std::fs::remove_file(&lock_path);
+                                }
+                            }
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+            }
+        }
 
-        let tmp_path = parent.join(format!(
-            ".execution_cache.{}.{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let write_res = (|| {
+            let content =
+                serde_json::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        std::fs::write(&tmp_path, content)?;
-        std::fs::rename(&tmp_path, &path)?;
-        Ok(())
+            let tmp_path = parent.join(format!(
+                ".execution_cache.{}.{}.tmp",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+
+            std::fs::write(&tmp_path, content)?;
+            std::fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })();
+
+        if acquired {
+            let _ = std::fs::remove_file(&lock_path);
+        }
+
+        write_res
     }
 }
 

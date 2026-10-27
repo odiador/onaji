@@ -129,6 +129,30 @@ impl PolicyChecker {
             });
         }
 
+        // Si la ruta o symlink existe en el disco, verificar que la resolución física canónica no escape del sandbox
+        if combined.exists() {
+            if let (Ok(canon_combined), Ok(canon_root)) =
+                (combined.canonicalize(), sandbox_root.canonicalize())
+            {
+                if !canon_combined.starts_with(&canon_root) {
+                    return Err(SecurityViolation {
+                        violation_type: ViolationType::PathTraversal,
+                        task_id: None,
+                        details: format!(
+                            "Symlink escape detected: '{}' resolves to '{}' outside sandbox '{}'",
+                            combined.display(),
+                            canon_combined.display(),
+                            canon_root.display()
+                        ),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    });
+                }
+            }
+        }
+
         Ok(combined)
     }
 
