@@ -107,7 +107,41 @@ impl ProcessExecutor {
                     cmd.env(k, v);
                 }
 
-                let output = cmd.output().await?;
+                let effective_timeout = task.timeout_secs.or_else(|| {
+                    std::env::var("ONAJI_DEFAULT_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                });
+
+                let output = match effective_timeout {
+                    Some(secs) => {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(secs),
+                            cmd.output(),
+                        )
+                        .await
+                        {
+                            Ok(res) => res?,
+                            Err(_) => {
+                                let duration_ms = start.elapsed().as_millis() as u64;
+                                return Ok(TaskExecutionResult {
+                                    task_id: task.id.clone(),
+                                    state: TaskState::Failed,
+                                    exit_code: Some(124),
+                                    stdout: String::new(),
+                                    stderr: format!(
+                                        "Execution timeout: task exceeded deadline of {} seconds",
+                                        secs
+                                    ),
+                                    duration_ms,
+                                    cache_key,
+                                });
+                            }
+                        }
+                    }
+                    None => cmd.output().await?,
+                };
+
                 let duration_ms = start.elapsed().as_millis() as u64;
 
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();

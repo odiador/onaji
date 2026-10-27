@@ -1,5 +1,5 @@
 use crate::domain::{Action, Task};
-use crate::fingerprint::{Fingerprint, Fingerprinter};
+use crate::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ impl CacheKey {
 
     pub fn compute_sha256(
         task: &Task,
-        workspace_root: &Path,
+        _workspace_root: &Path,
         input_fingerprints: &HashMap<String, Fingerprint>,
     ) -> Self {
         let mut hasher = Sha256::new();
@@ -87,16 +87,12 @@ impl CacheKey {
             hasher.update(b",");
         }
 
-        // 5. Sorted Cache Paths Fingerprints (e.g. build.gradle.kts, package.json)
+        // 5. Sorted Output Cache Paths (contract of output locations)
         for cache_rel_path in &task.cache_paths {
-            let full_path = workspace_root.join(cache_rel_path);
-            if full_path.exists() {
-                if let Ok(fp) = Fingerprinter::compute_path(&full_path) {
-                    let normalized_rel = cache_rel_path.to_string_lossy().replace('\\', "/");
-                    hasher.update(normalized_rel.as_bytes());
-                    hasher.update(fp.0.to_le_bytes());
-                }
-            }
+            let normalized_rel = cache_rel_path.to_string_lossy().replace('\\', "/");
+            hasher.update(b"output_path:");
+            hasher.update(normalized_rel.as_bytes());
+            hasher.update(b";");
         }
 
         let result = hasher.finalize();

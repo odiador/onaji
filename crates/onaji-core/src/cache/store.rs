@@ -104,15 +104,51 @@ impl ExecutionCache {
         Self::new()
     }
 
-    /// Persiste el estado de la caché en el disco de forma atómica.
+    /// Persiste el estado de la caché en el disco de forma atómica mediante un archivo temporal y rename.
     pub fn save(&self, workspace_root: &std::path::Path) -> std::io::Result<()> {
         let path = Self::default_cache_path(workspace_root);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let parent = match path.parent() {
+            Some(p) => p,
+            None => workspace_root,
+        };
+        std::fs::create_dir_all(parent)?;
+
         let content =
             serde_json::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
-        std::fs::write(path, content)?;
+
+        let tmp_path = parent.join(format!(
+            ".execution_cache.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_atomic_cache_save_and_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let mut cache = ExecutionCache::new();
+        let task_id = TaskId::new("compile");
+        let key = CacheKey::new("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        cache.record_success(&task_id, key.clone(), 120);
+
+        assert!(cache.check_hit(&task_id, &key));
+        cache.save(root).expect("atomic save should succeed");
+
+        let loaded = ExecutionCache::load_or_new(root);
+        assert!(loaded.check_hit(&task_id, &key));
     }
 }

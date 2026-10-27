@@ -77,6 +77,10 @@ pub struct RawTask {
     pub priority: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub retries: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

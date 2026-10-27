@@ -159,7 +159,25 @@ impl<'a> TaskScheduler<'a> {
                 // Evaluar Cache Key
                 let cache_key = CacheKey::compute(task, &self.workspace_root, &input_fps);
 
-                if self.cache.check_hit(&task.id, &cache_key) {
+                let mut is_hit = self.cache.check_hit(&task.id, &cache_key);
+
+                // Integridad física: Si hay cache hit pero la tarea declaró cache_paths de salida,
+                // verificamos que los archivos físicos existan realmente en disco.
+                if is_hit && !task.cache_paths.is_empty() {
+                    for rel_path in &task.cache_paths {
+                        let full_path = if rel_path.is_absolute() {
+                            rel_path.clone()
+                        } else {
+                            self.workspace_root.join(rel_path)
+                        };
+                        if !full_path.exists() {
+                            is_hit = false;
+                            break;
+                        }
+                    }
+                }
+
+                if is_hit {
                     // CACHE HIT
                     executed_results.insert(
                         task.id.clone(),
@@ -194,7 +212,43 @@ impl<'a> TaskScheduler<'a> {
                     let root = self.workspace_root.clone();
                     let key_opt = Some(cache_key);
                     join_set.spawn(async move {
-                        let res = ProcessExecutor::execute(&task, &root, key_opt).await;
+                        let mut attempts = 0;
+                        let max_attempts = task.retries.saturating_add(1);
+                        let mut final_res = None;
+
+                        while attempts < max_attempts {
+                            attempts += 1;
+                            let res = ProcessExecutor::execute(&task, &root, key_opt.clone()).await;
+                            match &res {
+                                Ok(r) if r.state == TaskState::Success => {
+                                    final_res = Some(res);
+                                    break;
+                                }
+                                Ok(_) if attempts < max_attempts => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        40 * attempts as u64,
+                                    ))
+                                    .await;
+                                }
+                                _ => {
+                                    final_res = Some(res);
+                                    break;
+                                }
+                            }
+                        }
+
+                        let res = final_res.unwrap_or_else(|| {
+                            // Fallback directo en caso extremo
+                            Ok(TaskExecutionResult {
+                                task_id: task.id.clone(),
+                                state: TaskState::Failed,
+                                exit_code: Some(1),
+                                stdout: String::new(),
+                                stderr: "Failed after retry budget exhausted".to_string(),
+                                duration_ms: 0,
+                                cache_key: key_opt,
+                            })
+                        });
                         (task, res)
                     });
                 }

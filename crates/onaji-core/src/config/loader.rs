@@ -140,6 +140,12 @@ impl ConfigLoader {
             if !raw_task.tags.is_empty() {
                 task = task.with_tags(raw_task.tags.clone());
             }
+            if let Some(t) = raw_task.timeout_secs {
+                task = task.with_timeout_secs(Some(t));
+            }
+            if let Some(r) = raw_task.retries {
+                task = task.with_retries(r);
+            }
 
             builder = builder.add_task(task);
         }

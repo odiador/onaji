@@ -29,6 +29,8 @@ async fn test_process_executor_cancellation_kills_child_immediately() {
         cache_paths: vec![],
         priority: TaskPriority::Normal,
         tags: vec![],
+        timeout_secs: None,
+        retries: 0,
     };
 
     let start = Instant::now();

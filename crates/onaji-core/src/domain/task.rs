@@ -98,6 +98,8 @@ pub struct Task {
     pub cache_paths: Vec<PathBuf>,
     pub priority: TaskPriority,
     pub tags: Vec<String>,
+    pub timeout_secs: Option<u64>,
+    pub retries: u32,
 }
 
 impl Task {
@@ -116,6 +118,8 @@ impl Task {
             cache_paths: Vec::new(),
             priority: TaskPriority::Normal,
             tags: Vec::new(),
+            timeout_secs: None,
+            retries: 0,
         }
     }
 
@@ -131,6 +135,16 @@ impl Task {
 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
+        self
+    }
+
+    pub fn with_timeout_secs(mut self, timeout: Option<u64>) -> Self {
+        self.timeout_secs = timeout;
+        self
+    }
+
+    pub fn with_retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
         self
     }
 

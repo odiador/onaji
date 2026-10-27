@@ -284,6 +284,20 @@ pub enum Commands {
         #[arg(long, help = "Purge entire cache including global cache")]
         all: bool,
     },
+
+    /// Manage Git pre-commit hooks for automated selective testing
+    Hook {
+        #[command(subcommand)]
+        command: HookCommands,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum HookCommands {
+    /// Install git pre-commit hook into .git/hooks/pre-commit
+    Install,
+    /// Uninstall git pre-commit hook
+    Uninstall,
 }
 
 #[derive(Subcommand, Debug, Clone)]
