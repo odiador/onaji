@@ -266,3 +266,51 @@ tasks:
     assert_eq!(res_b2.state, TaskState::Blocked);
     assert_eq!(res_c2.state, TaskState::Blocked);
 }
+
+#[tokio::test]
+async fn test_task_contextual_environment_injection_and_event_streaming() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let manifest_yaml = r#"
+version: "1"
+name: "context-env-test"
+
+tasks:
+  env_check_task:
+    inputs: []
+    outputs: []
+    run: "echo [TASK=$ONAJI_TASK_ID][ROOT=$ONAJI_WORKSPACE_ROOT][MODE=$ONAJI_EXECUTION_MODE]"
+"#;
+
+    let manifest_path = root.join("onaji.yaml");
+    fs::write(&manifest_path, manifest_yaml).unwrap();
+
+    let (_, dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    let mut cache = ExecutionCache::new();
+    let task_id = onaji_core::domain::TaskId::new("env_check_task");
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+
+    let summary = TaskScheduler::new(&dag, root, &mut cache)
+        .with_event_sender(tx)
+        .execute_tasks(&[task_id])
+        .await
+        .unwrap();
+
+    assert!(summary.success);
+    let res = &summary.results[0];
+    assert_eq!(res.state, TaskState::Success);
+    assert!(res.stdout.contains("[TASK=env_check_task]"));
+    assert!(res.stdout.contains("[ROOT="));
+    assert!(res.stdout.contains("[MODE=local]"));
+
+    // Verify broadcasted events
+    let ev1 = rx.recv().await.unwrap();
+    assert!(ev1.contains("event: task.started"));
+    assert!(ev1.contains("env_check_task"));
+
+    let ev2 = rx.recv().await.unwrap();
+    assert!(ev2.contains("event: task.completed"));
+    assert!(ev2.contains("env_check_task"));
+}

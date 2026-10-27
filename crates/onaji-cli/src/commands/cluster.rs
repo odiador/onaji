@@ -31,7 +31,17 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
             println!("Status:      READY (Accepting task assignments)\n");
 
             if let Err(err) = worker.run_server(&listen).await {
-                eprintln!("✗ Worker daemon error on {}: {}", listen, err);
+                if err.kind() == std::io::ErrorKind::AddrInUse {
+                    eprintln!(
+                        "✗ Failed to start worker daemon: Address '{}' is already in use.",
+                        listen
+                    );
+                    eprintln!(
+                        "  Try specifying a different listen address using '--listen <ADDR>'."
+                    );
+                } else {
+                    eprintln!("✗ Worker daemon error on {}: {}", listen, err);
+                }
                 std::process::exit(1);
             }
         }

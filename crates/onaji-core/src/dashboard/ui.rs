@@ -45,7 +45,10 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <body>
   <header>
     <div class="logo">ONΛJI <span class="logo-badge" id="project-badge">CLUSTER ACTIVE</span></div>
-    <div class="status-pill"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success)"></span> DAEMON READY (JSON-RPC)</div>
+    <div style="display:flex;gap:12px;align-items:center;">
+      <a href="/metrics" target="_blank" style="color:var(--text-muted);font-size:12px;text-decoration:none;border:1px solid var(--card-border);padding:6px 12px;border-radius:20px;display:flex;align-items:center;gap:6px;">📊 /metrics</a>
+      <div class="status-pill"><span id="live-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success)"></span> <span id="live-status">LIVE STREAM</span></div>
+    </div>
   </header>
 
   <div class="grid">
@@ -204,6 +207,30 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     }
     updateDashboard();
     setInterval(updateDashboard, 5000);
+
+    // Conexión reactiva en vivo vía Server-Sent Events (SSE)
+    try {
+      const evtSource = new EventSource('/api/events');
+      evtSource.addEventListener('system.ready', () => {
+        document.getElementById('live-status').innerText = 'LIVE STREAM';
+        document.getElementById('live-dot').style.background = 'var(--success)';
+      });
+      evtSource.addEventListener('task.started', () => {
+        updateDashboard();
+      });
+      evtSource.addEventListener('task.completed', () => {
+        updateDashboard();
+      });
+      evtSource.addEventListener('task.cached', () => {
+        updateDashboard();
+      });
+      evtSource.onerror = () => {
+        document.getElementById('live-status').innerText = 'RECONNECTING';
+        document.getElementById('live-dot').style.background = 'var(--cached)';
+      };
+    } catch (e) {
+      console.warn('SSE unsupported:', e);
+    }
   </script>
 </body>
 </html>

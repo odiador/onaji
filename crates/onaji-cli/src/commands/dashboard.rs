@@ -13,7 +13,15 @@ pub async fn handle_dashboard(config_path: &Path, port: u16, open_browser: bool)
         );
     }
     if let Err(err) = server.run().await {
-        eprintln!("Dashboard server error: {}", err);
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            eprintln!(
+                "✗ Failed to start dashboard: Port {} is already in use by another process.",
+                port
+            );
+            eprintln!("  Try specifying a different port using '--port <PORT>'.");
+        } else {
+            eprintln!("Dashboard server error: {}", err);
+        }
         std::process::exit(1);
     }
 }

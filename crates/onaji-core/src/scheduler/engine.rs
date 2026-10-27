@@ -19,6 +19,7 @@ pub struct TaskScheduler<'a> {
     cache: &'a mut ExecutionCache,
     fail_fast: bool,
     backend: Option<std::sync::Arc<dyn crate::remote::ExecutionBackend>>,
+    event_tx: Option<tokio::sync::broadcast::Sender<String>>,
 }
 
 impl<'a> TaskScheduler<'a> {
@@ -33,6 +34,7 @@ impl<'a> TaskScheduler<'a> {
             cache,
             fail_fast: false,
             backend: None,
+            event_tx: None,
         }
     }
 
@@ -46,6 +48,11 @@ impl<'a> TaskScheduler<'a> {
         backend: std::sync::Arc<dyn crate::remote::ExecutionBackend>,
     ) -> Self {
         self.backend = Some(backend);
+        self
+    }
+
+    pub fn with_event_sender(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
+        self.event_tx = Some(tx);
         self
     }
 
@@ -229,6 +236,13 @@ impl<'a> TaskScheduler<'a> {
 
                 if is_hit {
                     // CACHE HIT
+                    if let Some(tx) = &self.event_tx {
+                        let _ = tx.send(format!(
+                            "event: task.cached\r\ndata: {{\"task_id\":\"{}\"}}\r\n\r\n",
+                            task.id
+                        ));
+                    }
+
                     executed_results.insert(
                         task.id.clone(),
                         TaskExecutionResult {
@@ -259,6 +273,13 @@ impl<'a> TaskScheduler<'a> {
                 let mut join_set = tokio::task::JoinSet::new();
 
                 for (task, cache_key) in tasks_to_run_parallel {
+                    if let Some(tx) = &self.event_tx {
+                        let _ = tx.send(format!(
+                            "event: task.started\r\ndata: {{\"task_id\":\"{}\"}}\r\n\r\n",
+                            task.id
+                        ));
+                    }
+
                     let root = self.workspace_root.clone();
                     let key_opt = Some(cache_key);
                     let backend_cloned = self.backend.clone();
@@ -284,8 +305,20 @@ impl<'a> TaskScheduler<'a> {
                                     break;
                                 }
                                 Ok(_) if attempts < max_attempts => {
+                                    // Exponential backoff with jitter: base * 2^(attempts - 1) + jitter_ms
+                                    let base_ms: u64 = 25;
+                                    let shift = attempts.saturating_sub(1).min(6);
+                                    let exp_delay = base_ms.saturating_mul(1u64 << shift);
+                                    let now_nanos = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.subsec_nanos())
+                                        .unwrap_or(0);
+                                    let jitter_ms = (now_nanos % 20) as u64;
+                                    let total_delay_ms =
+                                        exp_delay.saturating_add(jitter_ms).min(1000);
+
                                     tokio::time::sleep(std::time::Duration::from_millis(
-                                        40 * attempts as u64,
+                                        total_delay_ms,
                                     ))
                                     .await;
                                 }
@@ -316,6 +349,20 @@ impl<'a> TaskScheduler<'a> {
                     let (task, exec_res) = join_res
                         .map_err(|e| RunnerError::Io(std::io::Error::other(e.to_string())))?;
                     let exec_result = exec_res?;
+
+                    if let Some(tx) = &self.event_tx {
+                        if exec_result.state == TaskState::Success {
+                            let _ = tx.send(format!(
+                                "event: task.completed\r\ndata: {{\"task_id\":\"{}\",\"duration_ms\":{}}}\r\n\r\n",
+                                task.id, exec_result.duration_ms
+                            ));
+                        } else {
+                            let _ = tx.send(format!(
+                                "event: task.failed\r\ndata: {{\"task_id\":\"{}\",\"exit_code\":{:?}}}\r\n\r\n",
+                                task.id, exec_result.exit_code
+                            ));
+                        }
+                    }
 
                     if exec_result.state == TaskState::Success {
                         if let Some(key) = &exec_result.cache_key {

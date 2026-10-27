@@ -8,8 +8,9 @@ async fn test_web_dashboard_server_endpoints() {
     let server = DashboardServer::new(port);
 
     // Spawn server in background task
+    let srv = server.clone();
     tokio::spawn(async move {
-        let _ = server.run().await;
+        let _ = srv.run().await;
     });
 
     // Wait a brief moment for the listener to bind
@@ -82,7 +83,7 @@ async fn test_web_dashboard_server_endpoints() {
     assert!(res_str4.contains(r#""task_id":"compile_android""#));
     assert!(res_str4.contains(r#""root_cause":"openapi_spec""#));
 
-    // 5. Test GET /api/events (SSE Stream)
+    // 5. Test GET /api/events (Live Persistent SSE Stream)
     let mut stream5 = TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("Connect to dashboard");
@@ -91,13 +92,49 @@ async fn test_web_dashboard_server_endpoints() {
         .await
         .unwrap();
 
-    let mut response5 = Vec::new();
-    stream5.read_to_end(&mut response5).await.unwrap();
-    let res_str5 = String::from_utf8_lossy(&response5);
+    let mut buf5 = [0; 2048];
+    let n5 = stream5.read(&mut buf5).await.unwrap();
+    let res_str5 = String::from_utf8_lossy(&buf5[..n5]);
 
     assert!(res_str5.contains("HTTP/1.1 200 OK"));
     assert!(res_str5.contains("text/event-stream"));
     assert!(res_str5.contains("event: task.started"));
     assert!(res_str5.contains("event: task.completed"));
     assert!(res_str5.contains("event: task.cached"));
+
+    // Test broadcasting a dynamic live event over the active SSE stream
+    server.broadcast_event(
+        "task.finished",
+        serde_json::json!({
+            "task_id": "test_live_task",
+            "duration_ms": 1337
+        }),
+    );
+
+    let mut buf5_live = [0; 1024];
+    let n5_live = stream5.read(&mut buf5_live).await.unwrap();
+    let res_str5_live = String::from_utf8_lossy(&buf5_live[..n5_live]);
+    assert!(res_str5_live.contains("event: task.finished"));
+    assert!(res_str5_live.contains("test_live_task"));
+    assert!(res_str5_live.contains("1337"));
+
+    // 6. Test GET /metrics (Prometheus OpenMetrics API)
+    let mut stream6 = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect to dashboard");
+    stream6
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response6 = Vec::new();
+    stream6.read_to_end(&mut response6).await.unwrap();
+    let res_str6 = String::from_utf8_lossy(&response6);
+
+    assert!(res_str6.contains("HTTP/1.1 200 OK"));
+    assert!(res_str6.contains("text/plain"));
+    assert!(res_str6.contains("onaji_tasks_total"));
+    assert!(res_str6.contains("onaji_cached_tasks_total"));
+    assert!(res_str6.contains("onaji_cas_bytes"));
+    assert!(res_str6.contains("onaji_cache_hit_ratio"));
 }

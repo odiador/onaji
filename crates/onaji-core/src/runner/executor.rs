@@ -103,6 +103,20 @@ impl ProcessExecutor {
 
                 cmd.current_dir(cwd);
                 cmd.kill_on_drop(true);
+
+                // Inyectar variables contextuales de ejecución ONΛJI
+                cmd.env("ONAJI_TASK_ID", task.id.as_str());
+                let canon_ws = workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| workspace_root.to_path_buf());
+                cmd.env("ONAJI_WORKSPACE_ROOT", canon_ws);
+                if let Some(key) = &cache_key {
+                    cmd.env("ONAJI_CACHE_KEY", &key.0);
+                }
+                let mode =
+                    std::env::var("ONAJI_EXECUTION_MODE").unwrap_or_else(|_| "local".to_string());
+                cmd.env("ONAJI_EXECUTION_MODE", mode);
+
                 for (k, v) in env {
                     cmd.env(k, v);
                 }
