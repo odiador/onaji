@@ -47,7 +47,9 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
 
     let dag = std::sync::Arc::new(dag);
     let workspace_root = std::sync::Arc::new(workspace_root);
-    let cache = std::sync::Arc::new(tokio::sync::Mutex::new(ExecutionCache::new()));
+    let cache = std::sync::Arc::new(tokio::sync::Mutex::new(ExecutionCache::load_or_new(
+        &workspace_root,
+    )));
     let mut active_run: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(event) = rx.recv().await {
@@ -142,6 +144,7 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
                             summary.total_duration_ms,
                             if summary.success { "PASSED" } else { "FAILED" }
                         );
+                        let _ = cache_guard.save(&task_root);
                     }
                     Err(err) => {
                         eprintln!("✗ Execution error: {}", err);

@@ -78,23 +78,37 @@ impl Fingerprinter {
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(current_dir)? {
             let entry = entry?;
-            entries.push(entry.path());
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            // Evitar indexar directorios internos de control de versiones y caché de Onaji
+            if name_str == ".git" || name_str == ".onaji" {
+                continue;
+            }
+            entries.push(entry);
         }
-        entries.sort();
+        entries.sort_by_key(|e| e.path());
 
         let mut combined_hashes = Vec::new();
-        for entry_path in entries {
+        for entry in entries {
+            let entry_path = entry.path();
             let rel_name = entry_path
                 .strip_prefix(base_root)
                 .unwrap_or(&entry_path)
                 .to_string_lossy()
                 .replace('\\', "/");
 
-            if entry_path.is_file() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                // Prevenir loops infinitos de recursión: no seguir symlinks recursivamente
+                let target = std::fs::read_link(&entry_path).unwrap_or_default();
+                combined_hashes.extend_from_slice(rel_name.as_bytes());
+                combined_hashes.extend_from_slice(b":symlink:");
+                combined_hashes.extend_from_slice(target.to_string_lossy().as_bytes());
+            } else if file_type.is_file() {
                 let file_hash = Self::compute_file(&entry_path)?;
                 combined_hashes.extend_from_slice(rel_name.as_bytes());
                 combined_hashes.extend_from_slice(&file_hash.0.to_le_bytes());
-            } else if entry_path.is_dir() {
+            } else if file_type.is_dir() {
                 let dir_hash = Self::compute_dir_internal(base_root, &entry_path)?;
                 combined_hashes.extend_from_slice(rel_name.as_bytes());
                 combined_hashes.extend_from_slice(&dir_hash.0.to_le_bytes());
@@ -106,5 +120,31 @@ impl Fingerprinter {
 
     pub fn compute_bytes(bytes: &[u8]) -> Fingerprint {
         Fingerprint(xxh3_64(bytes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_dir_symlink_loop_protection() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("file.txt"), "hello").unwrap();
+
+        #[cfg(unix)]
+        {
+            // Crear symlink cíclico que apunta al directorio raíz
+            let link = sub.join("cycle_link");
+            let _ = std::os::unix::fs::symlink(root, link);
+        }
+
+        // No debe causar stack overflow ni colgarse
+        let fp = Fingerprinter::compute_dir(root).expect("compute_dir handles symlinks safely");
+        assert_ne!(fp.0, 0);
     }
 }
