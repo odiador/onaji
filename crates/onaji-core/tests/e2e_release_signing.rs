@@ -54,3 +54,23 @@ fn test_release_signing_and_cryptographic_verification() {
         "Signature verified with wrong key must be rejected"
     );
 }
+
+#[test]
+fn test_release_command_sign_and_verify_e2e() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let artifact_path = root.join("artifact.bin");
+    let sig_path = root.join("artifact.bin.sig");
+    std::fs::write(&artifact_path, b"test artifact binary content").unwrap();
+
+    let raw_key = [7u8; 32];
+    let (sig_hex, pub_hex) =
+        SignatureVerifier::sign_ed25519(b"test artifact binary content", &raw_key);
+    std::fs::write(&sig_path, &sig_hex).unwrap();
+
+    let loaded_bytes = std::fs::read(&artifact_path).unwrap();
+    let loaded_sig = std::fs::read_to_string(&sig_path).unwrap();
+
+    let verified = SignatureVerifier::verify_ed25519(&loaded_bytes, &loaded_sig, &pub_hex).unwrap();
+    assert!(verified);
+}

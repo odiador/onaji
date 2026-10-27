@@ -432,6 +432,26 @@ pub enum ReleaseCommands {
         #[arg(short, long, help = "Optional Ed25519 public key hex string")]
         key: Option<String>,
     },
+
+    /// Sign an artifact using a 32-byte Ed25519 private key
+    Sign {
+        #[arg(help = "Path to the artifact archive or binary to sign")]
+        artifact: PathBuf,
+
+        #[arg(
+            short,
+            long,
+            help = "32-byte Ed25519 private signing key hex string (or path to key file)"
+        )]
+        key: String,
+
+        #[arg(
+            short,
+            long,
+            help = "Optional path to write the generated signature (.sig)"
+        )]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Default, Debug)]

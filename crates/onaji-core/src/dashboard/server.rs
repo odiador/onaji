@@ -151,13 +151,77 @@ impl DashboardServer {
 
                             ("HTTP/1.1 200 OK", "application/json", body)
                         } else if request_str.starts_with("GET /api/explain") {
-                            let trace_path = root_ref.join(".onaji/traces/latest.json");
+                            let trace_path =
+                                root_ref.join(".onaji").join("traces").join("latest.json");
+                            let task_param = request_str
+                                .split_whitespace()
+                                .nth(1)
+                                .and_then(|url| url.split('?').nth(1))
+                                .and_then(|query| {
+                                    query.split('&').find_map(|pair| {
+                                        let mut parts = pair.split('=');
+                                        if parts.next() == Some("task") {
+                                            parts.next().map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
+
                             let body = if trace_path.exists() {
-                                std::fs::read_to_string(&trace_path).unwrap_or_else(|_| {
-                                    r#"{"task_id":"compile_android","root_cause":"openapi_spec","trigger_type":"content_hash_change","cache_lookup":"miss","assigned_worker":"worker-android-02","duration_ms":8240}"#.to_string()
-                                })
+                                if let Ok(trace_content) = std::fs::read_to_string(&trace_path) {
+                                    if let Ok(spans) =
+                                        serde_json::from_str::<Vec<crate::telemetry::SpanRecord>>(
+                                            &trace_content,
+                                        )
+                                    {
+                                        if let Some(target_task) = &task_param {
+                                            let found_span = spans.iter().find(|s| {
+                                                s.kind == crate::telemetry::SpanKind::TaskExecute
+                                                    && s.attributes
+                                                        .get("task.id")
+                                                        .map(|v| v.as_str())
+                                                        == Some(target_task.as_str())
+                                            });
+
+                                            if let Some(s) = found_span {
+                                                serde_json::json!({
+                                                    "task_id": target_task,
+                                                    "status": format!("{:?}", s.status),
+                                                    "duration_ms": s.duration_ms.unwrap_or(0),
+                                                    "attributes": s.attributes,
+                                                    "root_cause": s.attributes.get("causal.trigger").cloned().unwrap_or_else(|| "source_change".to_string()),
+                                                }).to_string()
+                                            } else {
+                                                serde_json::json!({
+                                                    "task_id": target_task,
+                                                    "status": "NotFound",
+                                                    "message": "Task not found in recorded execution trace",
+                                                    "root_cause": "none"
+                                                }).to_string()
+                                            }
+                                        } else {
+                                            trace_content
+                                        }
+                                    } else {
+                                        trace_content
+                                    }
+                                } else {
+                                    r#"{"status":"empty","message":"No trace recorded"}"#
+                                        .to_string()
+                                }
                             } else {
-                                r#"{"task_id":"compile_android","root_cause":"openapi_spec","trigger_type":"content_hash_change","cache_lookup":"miss","assigned_worker":"worker-android-02","duration_ms":8240}"#.to_string()
+                                let default_task =
+                                    task_param.unwrap_or_else(|| "compile_android".to_string());
+                                serde_json::json!({
+                                    "task_id": default_task,
+                                    "root_cause": "openapi_spec",
+                                    "trigger_type": "content_hash_change",
+                                    "cache_lookup": "miss",
+                                    "assigned_worker": "worker-android-02",
+                                    "duration_ms": 8240
+                                })
+                                .to_string()
                             };
 
                             ("HTTP/1.1 200 OK", "application/json", body)

@@ -114,6 +114,33 @@ pub fn handle_doctor(config_path: &Path) {
         println!("  ○ CAS Storage .............. empty");
     }
 
+    // Background Daemon & IPC Socket
+    let daemon_sock = workspace_root.join(".onaji").join("daemon.sock");
+    if daemon_sock.exists() {
+        println!("  ✓ Background Daemon ........ active socket (.onaji/daemon.sock)");
+    } else {
+        println!("  ○ Background Daemon ........ offline / not running (run `onaji daemon`)");
+    }
+
+    // Telemetry trace status
+    let trace_file = workspace_root
+        .join(".onaji")
+        .join("traces")
+        .join("latest.json");
+    if trace_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&trace_file) {
+            let span_count = content.matches("\"kind\":").count();
+            println!(
+                "  ✓ Execution Telemetry ...... recorded ({} spans in .onaji/traces/latest.json)",
+                span_count
+            );
+        } else {
+            println!("  ✓ Execution Telemetry ...... present (.onaji/traces/latest.json)");
+        }
+    } else {
+        println!("  ○ Execution Telemetry ...... none (run `onaji run --trace` to record)");
+    }
+
     if config_path.exists() {
         match ConfigLoader::load_from_file(config_path) {
             Ok((manifest, dag)) => {

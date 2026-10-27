@@ -231,11 +231,15 @@ async fn test_remote_worker_tcp_server_lifecycle() {
         let _ = server_worker.run_server(&addr_str).await;
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let stream = TcpStream::connect(local_addr)
-        .await
-        .expect("Connect to TCP worker");
+    let mut stream_opt = None;
+    for _ in 0..50 {
+        if let Ok(s) = TcpStream::connect(local_addr).await {
+            stream_opt = Some(s);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let stream = stream_opt.expect("Connect to TCP worker");
     let (reader, mut writer) = tokio::io::split(stream);
     let mut lines = BufReader::new(reader).lines();
 
@@ -302,14 +306,18 @@ tasks:
 
     assert!(summary.success);
     assert_eq!(summary.results.len(), 2);
-    assert_eq!(
-        summary.results[0].state,
-        onaji_core::cache::TaskState::Success
-    );
-    assert_eq!(
-        summary.results[1].state,
-        onaji_core::cache::TaskState::Success
-    );
-    assert!(summary.results[0].stdout.contains("step1_done"));
-    assert!(summary.results[1].stdout.contains("step2_done"));
+    let step1_res = summary
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "build_step1")
+        .unwrap();
+    let step2_res = summary
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "build_step2")
+        .unwrap();
+    assert_eq!(step1_res.state, onaji_core::cache::TaskState::Success);
+    assert_eq!(step2_res.state, onaji_core::cache::TaskState::Success);
+    assert!(step1_res.stdout.contains("step1_done"));
+    assert!(step2_res.stdout.contains("step2_done"));
 }
