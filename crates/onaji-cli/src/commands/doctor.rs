@@ -160,7 +160,22 @@ pub fn handle_doctor(config_path: &Path) {
     // Background Daemon & IPC Socket
     let daemon_sock = workspace_root.join(".onaji").join("daemon.sock");
     if daemon_sock.exists() {
-        println!("  ✓ Background Daemon ........ active socket (.onaji/daemon.sock)");
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::UnixStream;
+            match UnixStream::connect(&daemon_sock) {
+                Ok(_) => {
+                    println!("  ✓ Background Daemon ........ active socket (.onaji/daemon.sock)");
+                }
+                Err(_) => {
+                    println!("  ⚠ Background Daemon ........ stale socket file (.onaji/daemon.sock) — no process listening");
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            println!("  ✓ Background Daemon ........ active socket (.onaji/daemon.sock)");
+        }
     } else {
         println!("  ○ Background Daemon ........ offline / not running (run `onaji daemon`)");
     }

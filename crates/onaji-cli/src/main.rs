@@ -17,7 +17,8 @@ async fn main() {
             debounce,
             tests,
             env,
-        } => handle_watch(&cli.config, debounce, tests, env).await,
+            dashboard,
+        } => handle_watch(&cli.config, debounce, tests, env, dashboard).await,
         Commands::Run {
             resource,
             ci,

@@ -62,35 +62,9 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <div class="card-title">Worker Cluster Nodes <span id="worker-count" class="tag">2 Connected</span></div>
-      <div class="cluster-grid">
-        <div class="worker-card">
-          <div>
-            <div class="worker-id">worker-linux-01</div>
-            <div class="worker-toolchains">
-              <span class="tag">rust 1.78</span>
-              <span class="tag">node 20</span>
-            </div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:12px;color:var(--success);font-weight:700">ONLINE</div>
-            <div style="font-size:11px;color:var(--text-muted)">Slots: 2 / 4</div>
-          </div>
-        </div>
-
-        <div class="worker-card">
-          <div>
-            <div class="worker-id">worker-android-02</div>
-            <div class="worker-toolchains">
-              <span class="tag">android_sdk 34</span>
-              <span class="tag">java 21</span>
-            </div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:12px;color:var(--success);font-weight:700">ONLINE</div>
-            <div style="font-size:11px;color:var(--text-muted)">Slots: 1 / 4</div>
-          </div>
-        </div>
+      <div class="card-title">Worker Cluster Nodes <span id="worker-count" class="tag">0 Connected</span></div>
+      <div class="cluster-grid" id="cluster-workers-list">
+        <div style="font-size:12px;color:var(--text-muted);padding:8px;">No remote workers registered (local execution)</div>
       </div>
 
       <div class="card-title" style="margin-top:24px">Distributed Cache (CAS)</div>
@@ -205,6 +179,36 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
               }
             });
             container.appendChild(flow);
+          }
+        }
+
+        const workersRes = await fetch('/api/workers');
+        if (workersRes.ok) {
+          const wData = await workersRes.json();
+          const container = document.getElementById('cluster-workers-list');
+          if (container && wData.workers) {
+            document.getElementById('worker-count').innerText = wData.workers.length + ' Connected';
+            if (wData.workers.length === 0) {
+              container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px;">No remote workers registered (local execution)</div>';
+            } else {
+              container.innerHTML = '';
+              wData.workers.forEach(w => {
+                const div = document.createElement('div');
+                div.className = 'worker-card';
+                const tcTags = Object.entries(w.toolchains || {}).map(([k, v]) => `<span class="tag">${k} ${v}</span>`).join(' ');
+                div.innerHTML = `
+                  <div>
+                    <div class="worker-id">${w.worker_id}</div>
+                    <div class="worker-toolchains">${tcTags}</div>
+                  </div>
+                  <div style="text-align:right">
+                    <div style="font-size:12px;color:var(--success);font-weight:700">${w.status}</div>
+                    <div style="font-size:11px;color:var(--text-muted)">Load: ${w.active_tasks} / ${w.max_parallel_tasks}</div>
+                  </div>
+                `;
+                container.appendChild(div);
+              });
+            }
           }
         }
       } catch (e) {

@@ -28,6 +28,7 @@ pub struct DashboardServer {
     pub port: u16,
     pub workspace_root: PathBuf,
     event_tx: broadcast::Sender<String>,
+    coordinator: Option<Arc<crate::remote::ClusterCoordinator>>,
 }
 
 impl DashboardServer {
@@ -37,11 +38,17 @@ impl DashboardServer {
             port,
             workspace_root: PathBuf::from("."),
             event_tx,
+            coordinator: None,
         }
     }
 
     pub fn with_workspace_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.workspace_root = root.into();
+        self
+    }
+
+    pub fn with_coordinator(mut self, coordinator: Arc<crate::remote::ClusterCoordinator>) -> Self {
+        self.coordinator = Some(coordinator);
         self
     }
 
@@ -64,11 +71,13 @@ impl DashboardServer {
 
         let ws_root = Arc::new(self.workspace_root.clone());
         let event_tx = self.event_tx.clone();
+        let coordinator = self.coordinator.clone();
 
         loop {
             let (mut socket, _) = listener.accept().await?;
             let root_ref = Arc::clone(&ws_root);
             let tx_clone = event_tx.clone();
+            let coord_ref = coordinator.clone();
 
             tokio::spawn(async move {
                 let mut buffer = [0; 4096];
@@ -79,7 +88,7 @@ impl DashboardServer {
 
                         if first_line.starts_with("GET /api/events") {
                             let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
-                            let initial_event = "event: task.started\r\ndata: {\"task_id\":\"validate_openapi\"}\r\n\r\nevent: task.completed\r\ndata: {\"task_id\":\"validate_openapi\",\"duration_ms\":42}\r\n\r\nevent: task.cached\r\ndata: {\"task_id\":\"generate_kotlin\"}\r\n\r\n";
+                            let initial_event = "event: system.ready\r\ndata: {\"status\":\"connected\",\"version\":\"0.1.0\"}\r\n\r\n";
                             let mut full_initial = String::from(header);
                             full_initial.push_str(initial_event);
 
@@ -191,6 +200,11 @@ impl DashboardServer {
                                     ("Unknown".to_string(), 0, 0)
                                 };
 
+                            let workers_online = coord_ref
+                                .as_ref()
+                                .map(|c| c.list_workers().len())
+                                .unwrap_or(0);
+
                             let body = serde_json::json!({
                                 "status": "ok",
                                 "version": env!("CARGO_PKG_VERSION"),
@@ -200,8 +214,39 @@ impl DashboardServer {
                                 "cached_tasks_count": cache.len(),
                                 "cas_artifacts_count": cas_count,
                                 "cas_size_bytes": cas_size_bytes,
-                                "workers_online": 1,
+                                "workers_online": workers_online,
                                 "cache_hit_ratio": if cache.is_empty() { 0.0 } else { 1.0 },
+                            })
+                            .to_string();
+
+                            ("HTTP/1.1 200 OK", "application/json", body)
+                        } else if first_line.starts_with("GET /api/workers") {
+                            let workers_list: Vec<serde_json::Value> =
+                                if let Some(coord) = &coord_ref {
+                                    coord
+                                        .list_workers()
+                                        .into_iter()
+                                        .map(|w| {
+                                            let load = coord.worker_load(&w.worker_id);
+                                            serde_json::json!({
+                                                "worker_id": w.worker_id,
+                                                "os": w.os,
+                                                "arch": w.arch,
+                                                "toolchains": w.toolchains,
+                                                "max_parallel_tasks": w.max_parallel_tasks,
+                                                "active_tasks": load,
+                                                "status": "ONLINE"
+                                            })
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
+
+                            let body = serde_json::json!({
+                                "status": "ok",
+                                "count": workers_list.len(),
+                                "workers": workers_list
                             })
                             .to_string();
 

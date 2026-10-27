@@ -72,6 +72,16 @@ pub enum Commands {
             help = "Pass custom environment variable(s) into reactively triggered tasks (KEY=VALUE)"
         )]
         env: Vec<(String, String)>,
+
+        #[arg(
+            short = 'd',
+            long = "dashboard",
+            value_name = "PORT",
+            help = "Launch real-time web dashboard alongside watcher (default: 8080 if specified without value)",
+            num_args = 0..=1,
+            default_missing_value = "8080"
+        )]
+        dashboard: Option<u16>,
     },
 
     /// Run tasks or trigger a pipeline manually or in CI/CD environments

@@ -1,6 +1,7 @@
 use crate::util::resolve_workspace_root;
 use onaji_core::cache::{ExecutionCache, TaskState};
 use onaji_core::config::ConfigLoader;
+use onaji_core::dashboard::DashboardServer;
 use onaji_core::graph::ImpactAnalyzer;
 use onaji_core::scheduler::TaskScheduler;
 use onaji_core::watcher::ReactiveWatcher;
@@ -12,6 +13,7 @@ pub async fn handle_watch(
     debounce_ms: u64,
     tests_only: bool,
     extra_env: Vec<(String, String)>,
+    dashboard_port: Option<u16>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
     let (manifest, dag) = match ConfigLoader::load_from_file(config_path) {
@@ -45,7 +47,25 @@ pub async fn handle_watch(
             extra_env.len()
         );
     }
+    if let Some(port) = dashboard_port {
+        println!(
+            "Dashboard:  📊 Real-time UI live at http://localhost:{}",
+            port
+        );
+    }
     println!("\nWatching for changes... (Press Ctrl+C to stop)\n");
+
+    let (event_sender, _dash_handle) = if let Some(port) = dashboard_port {
+        let server = DashboardServer::new(port).with_workspace_root(&workspace_root);
+        let sender = server.event_sender();
+        let srv = server.clone();
+        let handle = tokio::spawn(async move {
+            let _ = srv.run().await;
+        });
+        (Some(sender), Some(handle))
+    } else {
+        (None, None)
+    };
 
     let extra_env_map: std::sync::Arc<std::collections::HashMap<String, String>> =
         std::sync::Arc::new(extra_env.into_iter().collect());
@@ -78,6 +98,9 @@ pub async fn handle_watch(
                 if let Some(handle) = active_run.take() {
                     handle.abort();
                     let _ = handle.await;
+                }
+                if let Some(dh) = &_dash_handle {
+                    dh.abort();
                 }
                 let cache_guard = cache.lock().await;
                 let _ = cache_guard.save(&workspace_root);
@@ -165,10 +188,14 @@ pub async fn handle_watch(
             let task_root = std::sync::Arc::clone(&workspace_root);
             let task_cache = std::sync::Arc::clone(&cache);
             let task_env = std::sync::Arc::clone(&extra_env_map);
+            let task_event_tx = event_sender.clone();
 
             active_run = Some(tokio::spawn(async move {
                 let mut cache_guard = task_cache.lock().await;
                 let mut scheduler = TaskScheduler::new(&task_dag, &*task_root, &mut cache_guard);
+                if let Some(tx) = task_event_tx {
+                    scheduler = scheduler.with_event_sender(tx);
+                }
                 if !task_env.is_empty() {
                     scheduler = scheduler.with_env((*task_env).clone());
                 }

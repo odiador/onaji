@@ -59,6 +59,17 @@ impl DaemonServer {
     ) -> Result<(), std::io::Error> {
         let path = socket_path.as_ref();
         if path.exists() {
+            // Verificar si hay otro daemon escuchando activamente en este socket
+            if tokio::net::UnixStream::connect(path).await.is_ok() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!(
+                        "Another Onaji daemon is already listening on '{}'",
+                        path.display()
+                    ),
+                ));
+            }
+            // Socket huérfano / proceso previo caído: limpiamos de forma segura
             let _ = std::fs::remove_file(path);
         }
 

@@ -76,3 +76,46 @@ tasks:
     let impact_val = res_impact.result.unwrap();
     assert!(impact_val.get("affected_tasks").is_some());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_daemon_socket_hijacking_protection_and_stale_cleanup() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let sock_path = root.join("test_daemon.sock");
+
+    let mut server1 = onaji_core::DaemonServer::new(root);
+    let s_path1 = sock_path.clone();
+    let h1 = tokio::spawn(async move { server1.run_unix_socket(s_path1).await });
+
+    // Wait until server 1 binds
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(sock_path.exists());
+
+    // Attempt to start a second daemon on the same active socket -> must fail with AddrInUse
+    let mut server2 = onaji_core::DaemonServer::new(root);
+    let s_path2 = sock_path.clone();
+    let res2 = server2.run_unix_socket(s_path2).await;
+    assert!(res2.is_err());
+    let err = res2.err().unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+
+    // Stop server 1
+    h1.abort();
+    let _ = h1.await;
+
+    // Simulate stale socket remaining on disk after process dies
+    assert!(sock_path.exists());
+
+    // Now starting a new daemon should clean up the stale socket and successfully bind
+    let mut server3 = onaji_core::DaemonServer::new(root);
+    let s_path3 = sock_path.clone();
+    let h3 = tokio::spawn(async move { server3.run_unix_socket(s_path3).await });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(sock_path.exists());
+    assert!(tokio::net::UnixStream::connect(&sock_path).await.is_ok());
+
+    h3.abort();
+    let _ = h3.await;
+}

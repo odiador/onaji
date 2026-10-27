@@ -1,11 +1,24 @@
 use onaji_core::dashboard::DashboardServer;
+use onaji_core::remote::{ClusterCoordinator, WorkerDaemon};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 #[tokio::test]
 async fn test_web_dashboard_server_endpoints() {
     let port = 19890;
-    let server = DashboardServer::new(port);
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    let worker = Arc::new(WorkerDaemon::new(
+        "worker-test-node",
+        temp_dir.path(),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    ));
+    coordinator.register_worker(worker);
+
+    let server = DashboardServer::new(port).with_coordinator(coordinator);
 
     // Spawn server in background task
     let srv = server.clone();
@@ -98,9 +111,7 @@ async fn test_web_dashboard_server_endpoints() {
 
     assert!(res_str5.contains("HTTP/1.1 200 OK"));
     assert!(res_str5.contains("text/event-stream"));
-    assert!(res_str5.contains("event: task.started"));
-    assert!(res_str5.contains("event: task.completed"));
-    assert!(res_str5.contains("event: task.cached"));
+    assert!(res_str5.contains("event: system.ready"));
 
     // Test broadcasting a dynamic live event over the active SSE stream
     server.broadcast_event(
@@ -155,4 +166,24 @@ async fn test_web_dashboard_server_endpoints() {
     assert!(res_str7.contains("application/json"));
     assert!(res_str7.contains("\"status\":\"ok\""));
     assert!(res_str7.contains("evicted_count"));
+
+    // 8. Test GET /api/workers (Dynamic Cluster Workers API)
+    let mut stream8 = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect to dashboard");
+    stream8
+        .write_all(b"GET /api/workers HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response8 = Vec::new();
+    stream8.read_to_end(&mut response8).await.unwrap();
+    let res_str8 = String::from_utf8_lossy(&response8);
+
+    assert!(res_str8.contains("HTTP/1.1 200 OK"));
+    assert!(res_str8.contains("application/json"));
+    assert!(res_str8.contains("\"workers\""));
+    assert!(res_str8.contains("worker-test-node"));
+    assert!(res_str8.contains("\"active_tasks\":0"));
+    assert!(res_str8.contains("\"rust\":\"1.78.0\""));
 }
