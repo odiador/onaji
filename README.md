@@ -178,12 +178,16 @@ tasks:
     run: "echo 'Building static docs... OK'"
 ```
 
-### 🛡️ Task Resilience & Physical CAS Output Restoration
+### 🛡️ Task Resilience, Security & Physical CAS Storage
 
+- **Causal Failure Isolation vs. Fail-Fast (`--fail-fast`)**: In default mode, an execution failure blocks **only its transitive causal descendants** in the DAG (via BFS traversal), allowing independent tasks (e.g., backend tests vs. frontend lint) to execute concurrently. Supplying `--fail-fast` aborts all pending pipeline waves immediately.
 - **Process Deadman Switch (`timeout_secs`)**: Tasks specify maximum runtimes. If a process hangs or asks for interactive input, ONΛJI aborts it with exit code `124` and cleanly kills child processes.
 - **Flakiness Recovery (`retries`)**: Configurable exponential retry budget for network/compiler flakiness before flagging pipeline failure.
 - **Automatic Content-Addressed Output Restoration**: Outputs declared in `cache.paths` are stored in Tier 1 CAS (`.onaji/cache/cas/<key>/`). If a developer cleans output directories or switches branches, ONΛJI detects missing files on disk and **restores them in 1 ms** without recompilation.
-- **Atomic Cache Persistence**: Cache metadata writes use atomic temporary file renaming to prevent state corruption during concurrency or process termination.
+- **Quota-Aware CAS Pruning & Granular Invalidation**: Invalidate individual tasks (`onaji clean --task <task_id>`) with immediate physical CAS reclamation, or enforce disk quotas (`onaji clean --max-size 2GB`) with automated Least-Recently-Used (LRU) artifact tree eviction.
+- **Multi-Process Cache Locking**: Cache metadata writes use atomic temporary files protected by an advisory file lock (`.execution_cache.lock`) with automated recovery of orphan locks.
+- **Sandboxed Execution & Symlink Escape Prevention**: Hardened command filtering against shell injections and path confinement with canonical resolution preventing symlink sandbox breakouts.
+- **Graceful Daemon Shutdown**: `onaji watch` intercepts SIGINT (Ctrl+C), terminates active child processes immediately to prevent zombie processes, and flushes cache state before exiting.
 
 ### 🪝 Automated Git Pre-Commit Hook
 
@@ -239,20 +243,20 @@ Micro-benchmarks executed on Apple Silicon (`--release` profile, `opt-level = 3`
 
 | Command | Description |
 |---|---|
-| `onaji onboard` | Interactive project detection, adapter discovery, doctor diagnostics, and scaffolding |
-| `onaji init [--force]` | Auto-detect toolchains and initialize a starter `onaji.yaml` |
+| `onaji onboard` | Interactive project detection (Rust, Node, Gradle, Go, Python, OpenAPI), diagnostics, and DAG scaffolding |
+| `onaji init [--force]` | Auto-detect toolchains and initialize a starter `onaji.yaml` with connected task DAGs |
 | `onaji check` | Validate syntax, acyclicity, and dependency graph completeness |
-| `onaji run [options]` | Execute affected DAG tasks with caching, topological scheduling, and CI flags |
+| `onaji run [options]` | Execute affected DAG tasks (`--fail-fast`, `--tests`, `--since <ref>`, `--output json\|github`) |
 | `onaji affected [options]` | Discover or execute only tasks affected by git diff changes (`--since <ref>`, `--output json`) |
 | `onaji explain <task>` | Print causal explanation, trigger reason, and cache status for a given task |
-| `onaji watch [options]` | Run reactive file-watcher daemon (optional Smart Test Selection with `--tests`) |
-| `onaji dashboard [--open]` | Start embedded real-time web UI and DAG visualizer (SSE streaming) |
-| `onaji doctor` | Run diagnostics on installed toolchains, adapters, permissions, and paths |
-| `onaji worker <start\|status>`| Manage worker cluster nodes and remote executors |
+| `onaji watch [options]` | Run reactive file-watcher daemon with graceful SIGINT shutdown (`--tests`, `--debounce <ms>`) |
+| `onaji dashboard [--open]` | Start embedded real-time web UI and dynamic DAG visualizer |
+| `onaji doctor` | Run diagnostics on toolchains, container engines (docker/podman), Git hooks, and CAS storage |
+| `onaji worker <start\|status>`| Manage worker cluster nodes and remote executors with container sandboxing |
 | `onaji security check` | Audit authentication, command sandboxing, and execution policies |
 | `onaji workspace <list\|check>`| Multi-workspace monorepo inspection and cross-impact analysis |
 | `onaji plugin <list\|add\|...>`| Manage external WASM / JSON-RPC plugins and lockfile |
-| `onaji clean [--all]` | Clear workspace or global Content-Addressed Storage (CAS) caches |
+| `onaji clean [options]` | Invalidate cache records (`--task <id>`), enforce CAS quotas (`--max-size <limit>`), or purge all (`--all`) |
 | `onaji hook <install\|uninstall>` | Install or remove automated Git pre-commit hook for selective change testing |
 | `onaji completions <shell>` | Generate shell autocomplete scripts (bash, zsh, fish, powershell, elvish) |
 
