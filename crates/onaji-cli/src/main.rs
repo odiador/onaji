@@ -72,7 +72,11 @@ async fn main() {
         Commands::Release { command } => handle_release(command),
         Commands::Dashboard { port, open } => handle_dashboard(&cli.config, port, open).await,
         Commands::Completions { shell } => handle_completions(shell),
-        Commands::Clean { all, task } => handle_clean(&cli.config, all, task),
+        Commands::Clean {
+            all,
+            task,
+            max_size,
+        } => handle_clean(&cli.config, all, task, max_size),
         Commands::Hook { command } => handle_hook(&cli.config, command),
     }
 }

@@ -1,3 +1,4 @@
+use crate::util::{dir_size, format_bytes, resolve_workspace_root};
 use onaji_core::config::ConfigLoader;
 use std::path::Path;
 use std::process::Command;
@@ -28,6 +29,33 @@ pub fn handle_doctor(config_path: &Path) {
         Err(_) => println!("  ○ Android SDK .............. (not set in environment)"),
     }
 
+    // Check Container Runtime
+    match Command::new("docker").arg("--version").output() {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            println!("  ✓ Container Engine ......... docker ({})", ver);
+        }
+        _ => match Command::new("podman").arg("--version").output() {
+            Ok(out) if out.status.success() => {
+                let ver = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                println!("  ✓ Container Engine ......... podman ({})", ver);
+            }
+            _ => {
+                println!("  ○ Container Engine ......... (neither docker nor podman detected)");
+            }
+        },
+    }
+
     println!("\nAdapters & Plugins:");
     let registry = onaji_core::adapter::AdapterRegistry::with_builtins();
     for adapter in registry.list() {
@@ -39,7 +67,53 @@ pub fn handle_doctor(config_path: &Path) {
         println!("  ✓ [native] {:<18} [{}]", adapter.id(), caps.join(", "));
     }
 
-    println!("\nWorkspace:");
+    println!("\nWorkspace & Automation:");
+    let workspace_root = resolve_workspace_root(config_path);
+
+    // Git Hook status
+    let git_hook_path = workspace_root.join(".git").join("hooks").join("pre-commit");
+    if git_hook_path.exists() {
+        if let Ok(hook_body) = std::fs::read_to_string(&git_hook_path) {
+            if hook_body.contains("onaji") {
+                println!("  ✓ Git Pre-commit Hook ...... installed (.git/hooks/pre-commit)");
+            } else {
+                println!("  ⚠ Git Pre-commit Hook ...... foreign script present (run `onaji hook install` to overwrite)");
+            }
+        } else {
+            println!("  ✓ Git Pre-commit Hook ...... present");
+        }
+    } else if workspace_root.join(".git").exists() {
+        println!("  ○ Git Pre-commit Hook ...... not installed (run `onaji hook install`)");
+    } else {
+        println!("  ○ Git Repository ........... none detected in current workspace");
+    }
+
+    // Storage and CAS status
+    let cache_dir = workspace_root.join(".onaji").join("cache");
+    let cache_file = cache_dir.join("execution_cache.json");
+    if cache_file.exists() {
+        let cache = onaji_core::cache::ExecutionCache::load_or_new(&workspace_root);
+        println!(
+            "  ✓ Execution Cache .......... {} cached task records",
+            cache.len()
+        );
+    } else {
+        println!("  ○ Execution Cache .......... empty");
+    }
+
+    let cas_dir = cache_dir.join("cas");
+    if cas_dir.exists() {
+        let size = dir_size(&cas_dir);
+        let count = std::fs::read_dir(&cas_dir).map(|d| d.count()).unwrap_or(0);
+        println!(
+            "  ✓ CAS Storage .............. {} across {} artifact trees",
+            format_bytes(size),
+            count
+        );
+    } else {
+        println!("  ○ CAS Storage .............. empty");
+    }
+
     if config_path.exists() {
         match ConfigLoader::load_from_file(config_path) {
             Ok((manifest, dag)) => {

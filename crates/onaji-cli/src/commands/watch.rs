@@ -52,7 +52,28 @@ pub async fn handle_watch(config_path: &Path, debounce_ms: u64, tests_only: bool
     )));
     let mut active_run: Option<tokio::task::JoinHandle<()>> = None;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n🛑 [watch] Received interrupt signal (Ctrl+C) — terminating active tasks...");
+                if let Some(handle) = active_run.take() {
+                    handle.abort();
+                    let _ = handle.await;
+                }
+                let cache_guard = cache.lock().await;
+                let _ = cache_guard.save(&workspace_root);
+                println!("✓ Flushed cache state. Daemon stopped cleanly.");
+                break;
+            }
+            ev_opt = rx.recv() => {
+                match ev_opt {
+                    Some(ev) => ev,
+                    None => break,
+                }
+            }
+        };
+
         if let Some(handle) = active_run.take() {
             if !handle.is_finished() {
                 println!("⚡ [watch] In-flight pipeline preempted — aborting prior tasks...");

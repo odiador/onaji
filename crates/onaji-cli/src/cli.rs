@@ -286,6 +286,12 @@ pub enum Commands {
 
         #[arg(short, long, help = "Invalidate cache for a specific task ID")]
         task: Option<String>,
+
+        #[arg(
+            long,
+            help = "Prune CAS storage to stay under maximum size limit (e.g. '500MB', '2GB')"
+        )]
+        max_size: Option<String>,
     },
 
     /// Manage Git pre-commit hooks for automated selective testing

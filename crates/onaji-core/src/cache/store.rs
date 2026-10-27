@@ -83,6 +83,14 @@ impl ExecutionCache {
         self.records.clear();
     }
 
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
     /// Ruta predeterminada para el almacenamiento de caché CAS local del workspace (.onaji/cache/execution_cache.json)
     pub fn default_cache_path(workspace_root: &std::path::Path) -> std::path::PathBuf {
         workspace_root
