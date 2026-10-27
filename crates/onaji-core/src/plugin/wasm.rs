@@ -44,7 +44,7 @@ impl WasmPluginAdapter {
         policy: WasmSecurityPolicy,
     ) -> Result<Self, AdapterError> {
         let mut config = Config::new();
-        config.consume_fuel(false);
+        config.consume_fuel(true);
 
         let engine = Engine::new(&config).map_err(|e| {
             AdapterError::Execution(format!("Failed to create Wasmtime engine: {}", e))
@@ -82,6 +82,15 @@ impl WasmPluginAdapter {
 
     fn invoke_abi(&self, method_code: i32, json_payload: &str) -> Result<String, AdapterError> {
         let mut store = Store::new(&self.engine, ());
+        let fuel_limit = self
+            ._policy
+            .timeout_ms
+            .saturating_mul(100_000)
+            .max(1_000_000);
+        store.set_fuel(fuel_limit).map_err(|e| {
+            AdapterError::Execution(format!("Failed to set WASM execution fuel: {}", e))
+        })?;
+
         let linker = Linker::new(&self.engine);
 
         let instance = linker

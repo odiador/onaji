@@ -118,3 +118,60 @@ fn test_wasm_plugin_sandbox_lifecycle_and_validation() {
     assert_eq!(inspection.properties[0].key, "Sandbox");
     assert_eq!(inspection.properties[0].value, "Wasmtime");
 }
+
+const INFINITE_LOOP_WASM_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (func (export "onaji_malloc") (param $size i32) (result i32) i32.const 0)
+  (func (export "onaji_free") (param $ptr i32) (param $size i32))
+  (func (export "onaji_call") (param $method i32) (param $req_ptr i32) (param $req_len i32) (result i64)
+    (loop (br 0))
+    i64.const 0
+  )
+)
+"#;
+
+#[test]
+fn test_wasm_plugin_infinite_loop_fuel_exhaustion() {
+    let manifest = PluginManifest {
+        name: "infinite-loop-plugin".to_string(),
+        version: "1.0.0".to_string(),
+        protocol: "1".to_string(),
+        capabilities: vec![Capability::Detect],
+        resources: vec![],
+        runtime: PluginRuntime {
+            command: "wasm".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+        },
+        permissions: PluginPermissions {
+            workspace_filesystem: false,
+            network: false,
+            environment: vec![],
+        },
+        manifest_path: None,
+    };
+
+    let policy = WasmSecurityPolicy {
+        max_memory_bytes: 16 * 1024 * 1024,
+        timeout_ms: 10,
+        allow_filesystem: false,
+        allow_network: false,
+    };
+
+    let adapter = WasmPluginAdapter::from_wat(INFINITE_LOOP_WASM_WAT, manifest, policy)
+        .expect("WASM adapter builds");
+
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = AdapterContext::new(temp.path());
+
+    let err = adapter
+        .detect(&ctx)
+        .expect_err("Infinite loop must run out of fuel");
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("fuel") || err_str.contains("WASM"),
+        "Expected fuel or trap error, got: {}",
+        err_str
+    );
+}

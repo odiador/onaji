@@ -283,6 +283,9 @@ pub enum Commands {
     Clean {
         #[arg(long, help = "Purge entire cache including global cache")]
         all: bool,
+
+        #[arg(short, long, help = "Invalidate cache for a specific task ID")]
+        task: Option<String>,
     },
 
     /// Manage Git pre-commit hooks for automated selective testing
