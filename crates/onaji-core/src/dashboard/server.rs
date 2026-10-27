@@ -115,8 +115,57 @@ impl DashboardServer {
                         }
 
                         let (status_line, content_type, body) = if first_line
-                            .starts_with("GET /api/status")
+                            .starts_with("POST /api/clean")
                         {
+                            let max_size = first_line
+                                .split_whitespace()
+                                .nth(1)
+                                .and_then(|url| url.split('?').nth(1))
+                                .and_then(|query| {
+                                    query.split('&').find_map(|pair| {
+                                        let mut parts = pair.split('=');
+                                        if parts.next() == Some("max_size") {
+                                            parts.next().map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
+
+                            let target_bytes = if let Some(size_str) = max_size {
+                                if size_str.ends_with("GB") || size_str.ends_with("gb") {
+                                    size_str[..size_str.len() - 2].parse::<u64>().unwrap_or(0)
+                                        * 1024
+                                        * 1024
+                                        * 1024
+                                } else if size_str.ends_with("MB") || size_str.ends_with("mb") {
+                                    size_str[..size_str.len() - 2].parse::<u64>().unwrap_or(0)
+                                        * 1024
+                                        * 1024
+                                } else if size_str.ends_with("KB") || size_str.ends_with("kb") {
+                                    size_str[..size_str.len() - 2].parse::<u64>().unwrap_or(0)
+                                        * 1024
+                                } else {
+                                    size_str.parse::<u64>().unwrap_or(0)
+                                }
+                            } else {
+                                0
+                            };
+
+                            let (evicted_count, evicted_bytes) =
+                                crate::cache::ExecutionCache::prune_cas(&root_ref, target_bytes)
+                                    .unwrap_or((0, 0));
+
+                            let body = serde_json::json!({
+                                "status": "ok",
+                                "evicted_count": evicted_count,
+                                "evicted_bytes": evicted_bytes,
+                                "message": format!("CAS storage pruned ({} artifacts evicted, {} bytes freed)", evicted_count, evicted_bytes)
+                            })
+                            .to_string();
+
+                            ("HTTP/1.1 200 OK", "application/json", body)
+                        } else if first_line.starts_with("GET /api/status") {
                             let manifest_path = root_ref.join("onaji.yaml");
                             let cache = crate::cache::ExecutionCache::load_or_new(&root_ref);
                             let cas_dir = root_ref.join(".onaji").join("cache").join("cas");

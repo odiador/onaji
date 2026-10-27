@@ -1,6 +1,23 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+pub fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let mut parts = s.splitn(2, '=');
+    let key = parts.next().unwrap_or("").trim().to_string();
+    let val = parts
+        .next()
+        .ok_or_else(|| format!("Expected KEY=VAL format, got '{}'", s))?
+        .trim()
+        .to_string();
+    if key.is_empty() {
+        return Err(format!(
+            "Environment variable name cannot be empty in '{}'",
+            s
+        ));
+    }
+    Ok((key, val))
+}
+
 #[derive(Parser)]
 #[command(
     name = "onaji",
@@ -100,6 +117,14 @@ pub enum Commands {
 
         #[arg(long, help = "Dispatch task execution to remote cluster workers")]
         remote: bool,
+
+        #[arg(
+            short = 'e',
+            long = "env",
+            value_parser = parse_key_val,
+            help = "Pass custom environment variable(s) into task executions (KEY=VALUE)"
+        )]
+        env: Vec<(String, String)>,
     },
 
     /// Analyze or execute tasks affected by git diff or uncommitted working directory changes
@@ -141,6 +166,14 @@ pub enum Commands {
             help = "Output formatting: text, github, or json"
         )]
         output: OutputFormat,
+
+        #[arg(
+            short = 'e',
+            long = "env",
+            value_parser = parse_key_val,
+            help = "Pass custom environment variable(s) into task executions (KEY=VALUE)"
+        )]
+        env: Vec<(String, String)>,
     },
 
     /// Explain why a task was executed or cached using causal graph telemetry

@@ -20,6 +20,7 @@ pub struct TaskScheduler<'a> {
     fail_fast: bool,
     backend: Option<std::sync::Arc<dyn crate::remote::ExecutionBackend>>,
     event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    extra_env: HashMap<String, String>,
 }
 
 impl<'a> TaskScheduler<'a> {
@@ -35,6 +36,7 @@ impl<'a> TaskScheduler<'a> {
             fail_fast: false,
             backend: None,
             event_tx: None,
+            extra_env: HashMap::new(),
         }
     }
 
@@ -53,6 +55,11 @@ impl<'a> TaskScheduler<'a> {
 
     pub fn with_event_sender(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
         self.event_tx = Some(tx);
+        self
+    }
+
+    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
+        self.extra_env = env;
         self
     }
 
@@ -272,7 +279,16 @@ impl<'a> TaskScheduler<'a> {
             if !tasks_to_run_parallel.is_empty() {
                 let mut join_set = tokio::task::JoinSet::new();
 
-                for (task, cache_key) in tasks_to_run_parallel {
+                for (mut task, cache_key) in tasks_to_run_parallel.clone() {
+                    // Inyectar variables de entorno personalizadas pasadas dinámicamente
+                    if !self.extra_env.is_empty() {
+                        if let crate::domain::Action::Command { env, .. } = &mut task.action {
+                            for (k, v) in &self.extra_env {
+                                env.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+
                     if let Some(tx) = &self.event_tx {
                         let _ = tx.send(format!(
                             "event: task.started\r\ndata: {{\"task_id\":\"{}\"}}\r\n\r\n",
@@ -346,8 +362,16 @@ impl<'a> TaskScheduler<'a> {
                 }
 
                 while let Some(join_res) = join_set.join_next().await {
-                    let (task, exec_res) = join_res
-                        .map_err(|e| RunnerError::Io(std::io::Error::other(e.to_string())))?;
+                    let (task, exec_res) = match join_res {
+                        Ok(pair) => pair,
+                        Err(e) if e.is_cancelled() => {
+                            // Tarea cancelada por abort_all() en modo fail-fast
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(RunnerError::Io(std::io::Error::other(e.to_string())))
+                        }
+                    };
                     let exec_result = exec_res?;
 
                     if let Some(tx) = &self.event_tx {
@@ -392,7 +416,10 @@ impl<'a> TaskScheduler<'a> {
                         self.cache.invalidate(&task.id);
 
                         if self.fail_fast {
-                            // En modo fail-fast, bloquear todas las tareas restantes del workspace
+                            // En modo fail-fast, cancelar inmediatamente todas las tareas concurrentes en vuelo
+                            join_set.abort_all();
+
+                            // Bloquear todas las tareas restantes del workspace
                             for remaining_id in &sorted_task_ids {
                                 if remaining_id != &task.id
                                     && !executed_results.contains_key(remaining_id)
@@ -419,6 +446,28 @@ impl<'a> TaskScheduler<'a> {
                     }
 
                     executed_results.insert(task.id.clone(), exec_result);
+                }
+
+                // Si fail-fast canceló tareas en vuelo de esta oleada, registrarlas como Blocked
+                if self.fail_fast && !overall_success {
+                    for (t, k) in &tasks_to_run_parallel {
+                        if !executed_results.contains_key(&t.id) {
+                            executed_results.insert(
+                                t.id.clone(),
+                                TaskExecutionResult {
+                                    task_id: t.id.clone(),
+                                    state: TaskState::Blocked,
+                                    exit_code: None,
+                                    stdout: String::new(),
+                                    stderr:
+                                        "Aborted due to peer task failure (--fail-fast enabled)"
+                                            .to_string(),
+                                    duration_ms: 0,
+                                    cache_key: Some(k.clone()),
+                                },
+                            );
+                        }
+                    }
                 }
             }
         }

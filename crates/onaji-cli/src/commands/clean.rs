@@ -30,75 +30,29 @@ pub fn handle_clean(
             }
         };
 
-        let cas_dir = workspace_root.join(".onaji").join("cache").join("cas");
-        if !cas_dir.exists() {
-            println!("○ CAS directory is empty. Nothing to prune.");
-            return;
-        }
-
-        let mut cas_entries = Vec::new();
-        let mut total_size = 0;
-
-        if let Ok(entries) = std::fs::read_dir(&cas_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let mtime = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let size = if path.is_file() {
-                    entry.metadata().map(|m| m.len()).unwrap_or(0)
-                } else if path.is_dir() {
-                    dir_size(&path)
-                } else {
-                    0
-                };
-                if size > 0 || path.exists() {
-                    total_size += size;
-                    cas_entries.push((path, size, mtime));
-                }
+        match ExecutionCache::prune_cas(&workspace_root, max_bytes) {
+            Ok((evicted_count, evicted_bytes)) if evicted_count > 0 => {
+                let remaining = dir_size(&workspace_root.join(".onaji").join("cache").join("cas"));
+                println!(
+                    "✓ Pruned {} across {} old CAS artifacts to meet quota of {} (remaining: {}).",
+                    format_bytes(evicted_bytes),
+                    evicted_count,
+                    format_bytes(max_bytes),
+                    format_bytes(remaining)
+                );
+            }
+            Ok(_) => {
+                let current = dir_size(&workspace_root.join(".onaji").join("cache").join("cas"));
+                println!(
+                    "○ CAS storage is {} (under quota limit of {}). No eviction needed.",
+                    format_bytes(current),
+                    format_bytes(max_bytes)
+                );
+            }
+            Err(err) => {
+                eprintln!("✗ Failed to prune CAS store: {}", err);
             }
         }
-
-        if total_size <= max_bytes {
-            println!(
-                "○ CAS storage is {} (under quota limit of {}). No eviction needed.",
-                format_bytes(total_size),
-                format_bytes(max_bytes)
-            );
-            return;
-        }
-
-        // Sort ascending by modification time -> LRU eviction
-        cas_entries.sort_by_key(|(_, _, mtime)| *mtime);
-
-        let mut evicted_bytes = 0;
-        let mut evicted_count = 0;
-        let mut current_size = total_size;
-
-        for (path, size, _) in cas_entries {
-            if current_size <= max_bytes {
-                break;
-            }
-            let removed = if path.is_dir() {
-                std::fs::remove_dir_all(&path).is_ok()
-            } else {
-                std::fs::remove_file(&path).is_ok()
-            };
-            if removed {
-                evicted_bytes += size;
-                evicted_count += 1;
-                current_size = current_size.saturating_sub(size);
-            }
-        }
-
-        println!(
-            "✓ Pruned {} across {} old CAS artifacts to meet quota of {} (remaining: {}).",
-            format_bytes(evicted_bytes),
-            evicted_count,
-            format_bytes(max_bytes),
-            format_bytes(current_size)
-        );
         return;
     }
 

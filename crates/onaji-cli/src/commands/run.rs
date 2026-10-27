@@ -20,6 +20,7 @@ pub async fn handle_run(
     trace_format: OutputFormat,
     trace_output: Option<PathBuf>,
     remote: bool,
+    extra_env: Vec<(String, String)>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
     let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
@@ -98,6 +99,10 @@ pub async fn handle_run(
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler =
         TaskScheduler::new(&dag, &workspace_root, &mut cache).with_fail_fast(fail_fast);
+    let env_map: std::collections::HashMap<String, String> = extra_env.into_iter().collect();
+    if !env_map.is_empty() {
+        scheduler = scheduler.with_env(env_map);
+    }
     if let Some(b) = backend_opt {
         scheduler = scheduler.with_backend(b);
     }
@@ -516,6 +521,7 @@ pub fn handle_impact(config_path: &Path, resource_id_str: &str, _ci: bool, outpu
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_affected(
     config_path: &Path,
     since_ref: &str,
@@ -524,6 +530,7 @@ pub async fn handle_affected(
     execute_run: bool,
     fail_fast: bool,
     output: OutputFormat,
+    extra_env: Vec<(String, String)>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
     let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
@@ -635,6 +642,10 @@ pub async fn handle_affected(
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler =
         TaskScheduler::new(&dag, &workspace_root, &mut cache).with_fail_fast(fail_fast);
+    let env_map: std::collections::HashMap<String, String> = extra_env.into_iter().collect();
+    if !env_map.is_empty() {
+        scheduler = scheduler.with_env(env_map);
+    }
     match scheduler.execute_tasks(&report.affected_tasks).await {
         Ok(summary) => {
             match output {

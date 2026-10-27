@@ -25,6 +25,7 @@ async fn main() {
             since,
             tests,
             remote,
+            env,
         } => {
             handle_run(
                 &cli.config,
@@ -38,6 +39,7 @@ async fn main() {
                 trace_format,
                 trace_output,
                 remote,
+                env,
             )
             .await
         }
@@ -48,6 +50,7 @@ async fn main() {
             run,
             fail_fast,
             output,
+            env,
         } => {
             handle_affected(
                 &cli.config,
@@ -57,6 +60,7 @@ async fn main() {
                 run,
                 fail_fast,
                 output,
+                env,
             )
             .await
         }

@@ -137,4 +137,22 @@ async fn test_web_dashboard_server_endpoints() {
     assert!(res_str6.contains("onaji_cached_tasks_total"));
     assert!(res_str6.contains("onaji_cas_bytes"));
     assert!(res_str6.contains("onaji_cache_hit_ratio"));
+
+    // 7. Test POST /api/clean (CAS Prune API)
+    let mut stream7 = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect to dashboard");
+    stream7
+        .write_all(b"POST /api/clean?max_size=500MB HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response7 = Vec::new();
+    stream7.read_to_end(&mut response7).await.unwrap();
+    let res_str7 = String::from_utf8_lossy(&response7);
+
+    assert!(res_str7.contains("HTTP/1.1 200 OK"));
+    assert!(res_str7.contains("application/json"));
+    assert!(res_str7.contains("\"status\":\"ok\""));
+    assert!(res_str7.contains("evicted_count"));
 }

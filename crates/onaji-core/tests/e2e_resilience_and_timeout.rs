@@ -314,3 +314,107 @@ tasks:
     assert!(ev2.contains("event: task.completed"));
     assert!(ev2.contains("env_check_task"));
 }
+
+#[tokio::test]
+async fn test_fail_fast_aborts_inflight_parallel_tasks() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let manifest_yaml = r#"
+version: "1"
+name: "fail-fast-inflight-abort"
+
+tasks:
+  fast_failing_task:
+    inputs: []
+    outputs: []
+    run: "exit 1"
+
+  slow_peer_task:
+    inputs: []
+    outputs: []
+    run: "sleep 10"
+"#;
+
+    let manifest_path = root.join("onaji.yaml");
+    fs::write(&manifest_path, manifest_yaml).unwrap();
+
+    let (_, dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    let mut cache = ExecutionCache::new();
+    let task_ids = vec![
+        onaji_core::domain::TaskId::new("fast_failing_task"),
+        onaji_core::domain::TaskId::new("slow_peer_task"),
+    ];
+
+    let start = std::time::Instant::now();
+    let summary = TaskScheduler::new(&dag, root, &mut cache)
+        .with_fail_fast(true)
+        .execute_tasks(&task_ids)
+        .await
+        .unwrap();
+
+    let elapsed = start.elapsed();
+    // Must abort immediately without waiting for slow_peer_task (10s)
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "Fail-fast took too long: {:?}",
+        elapsed
+    );
+    assert!(!summary.success);
+
+    let fail_res = summary
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "fast_failing_task")
+        .unwrap();
+    let abort_res = summary
+        .results
+        .iter()
+        .find(|r| r.task_id.as_str() == "slow_peer_task")
+        .unwrap();
+
+    assert_eq!(fail_res.state, TaskState::Failed);
+    assert_eq!(abort_res.state, TaskState::Blocked);
+    assert!(abort_res.stderr.contains("fail-fast enabled"));
+}
+
+#[tokio::test]
+async fn test_scheduler_custom_env_injection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let manifest_yaml = r#"
+version: "1"
+name: "custom-env-test"
+
+tasks:
+  print_env_task:
+    inputs: []
+    outputs: []
+    run: "echo [INJECTED_VAR=$CUSTOM_INJECTED_FLAG]"
+"#;
+
+    let manifest_path = root.join("onaji.yaml");
+    fs::write(&manifest_path, manifest_yaml).unwrap();
+
+    let (_, dag) = ConfigLoader::load_from_file(&manifest_path).unwrap();
+    let mut cache = ExecutionCache::new();
+    let task_id = onaji_core::domain::TaskId::new("print_env_task");
+
+    let mut custom_env = std::collections::HashMap::new();
+    custom_env.insert(
+        "CUSTOM_INJECTED_FLAG".to_string(),
+        "active_and_verified".to_string(),
+    );
+
+    let summary = TaskScheduler::new(&dag, root, &mut cache)
+        .with_env(custom_env)
+        .execute_tasks(&[task_id])
+        .await
+        .unwrap();
+
+    assert!(summary.success);
+    let res = &summary.results[0];
+    assert_eq!(res.state, TaskState::Success);
+    assert!(res.stdout.contains("[INJECTED_VAR=active_and_verified]"));
+}
