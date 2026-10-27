@@ -439,20 +439,74 @@ impl<'a> TaskScheduler<'a> {
         })
     }
 
+    fn unpack_cas_archive_safely(workspace_root: &Path, archive_file: std::fs::File) -> bool {
+        let decoder = match zstd::Decoder::new(archive_file) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+        let mut archive = tar::Archive::new(decoder);
+        let entries = match archive.entries() {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+
+        for entry_res in entries {
+            let mut entry = match entry_res {
+                Ok(e) => e,
+                Err(_) => return false,
+            };
+
+            let path = match entry.path() {
+                Ok(p) => p.to_path_buf(),
+                Err(_) => return false,
+            };
+
+            // Prevenir Zip-Slip / Path Traversal: Rechazar rutas absolutas o que contengan '..'
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return false;
+            }
+
+            let full_target = workspace_root.join(&path);
+            if !full_target.starts_with(workspace_root) {
+                return false;
+            }
+
+            // Sanitizar enlaces simbólicos
+            if entry.header().entry_type().is_symlink() {
+                if let Ok(Some(link_target)) = entry.link_name() {
+                    if link_target.is_absolute()
+                        || link_target
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            if entry.unpack_in(workspace_root).is_err() {
+                return false;
+            }
+        }
+
+        true
+    }
+
     fn restore_cas_outputs(workspace_root: &Path, cache_key: &CacheKey, paths: &[PathBuf]) -> bool {
         let cas_dir = workspace_root.join(".onaji").join("cache").join("cas");
         let archive_path = cas_dir.join(format!("{}.tar.zst", cache_key.as_str()));
 
-        // 1. Descompresión rápida desde archivo comprimido Zstandard TAR (.tar.zst)
+        // 1. Descompresión rápida y segura desde archivo comprimido Zstandard TAR (.tar.zst)
         if archive_path.exists() {
             if let Ok(file) = std::fs::File::open(&archive_path) {
-                if let Ok(decoder) = zstd::Decoder::new(file) {
-                    let mut archive = tar::Archive::new(decoder);
-                    if archive.unpack(workspace_root).is_ok() {
-                        let all_present = paths.iter().all(|p| workspace_root.join(p).exists());
-                        if all_present {
-                            return true;
-                        }
+                if Self::unpack_cas_archive_safely(workspace_root, file) {
+                    let all_present = paths.iter().all(|p| workspace_root.join(p).exists());
+                    if all_present {
+                        return true;
                     }
                 }
             }

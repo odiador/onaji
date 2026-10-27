@@ -51,6 +51,13 @@ impl ReactiveWatcher {
         let mut debouncer = new_debouncer(debounce_duration, std_tx)?;
 
         let mut normalizer = EventNormalizer::new(&self.workspace_root);
+        for t_id in dag.task_indices.keys() {
+            if let Some(task) = dag.get_task(t_id) {
+                for cp in &task.cache_paths {
+                    normalizer.exclude_path(cp);
+                }
+            }
+        }
         let mut file_resources = Vec::new();
         let mut http_resources = Vec::new();
 

@@ -385,6 +385,43 @@ tasks:
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    #[test]
+    fn test_event_normalizer_anti_feedback_loop() {
+        let temp_dir = tempfile_dir("onaji_test_feedback_loop");
+        let onaji_cache = temp_dir.join(".onaji").join("cache");
+        std::fs::create_dir_all(&onaji_cache).unwrap();
+
+        let res_file = temp_dir.join("source.rs");
+        std::fs::write(&res_file, "fn main() {}").unwrap();
+
+        let res = Resource::new(
+            "src",
+            ResourceType::File {
+                path: res_file.clone(),
+                debounce_ms: 100,
+            },
+        );
+
+        let mut normalizer = EventNormalizer::new(&temp_dir);
+        normalizer.register_resources(std::iter::once(&res));
+
+        // 1. Files inside .onaji/** must always be ignored (UnrelatedPath)
+        let cache_file = onaji_cache.join("execution_cache.json");
+        std::fs::write(&cache_file, "{}").unwrap();
+        let norm_res = normalizer.normalize_fs_event(&cache_file);
+        assert_eq!(norm_res, NormalizationResult::UnrelatedPath(cache_file));
+
+        // 2. Explicitly excluded output paths must be ignored
+        let build_output = temp_dir.join("build.log");
+        std::fs::write(&build_output, "build done").unwrap();
+        normalizer.exclude_path(&build_output);
+        let norm_res2 = normalizer.normalize_fs_event(&build_output);
+        assert_eq!(norm_res2, NormalizationResult::UnrelatedPath(build_output));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
     #[tokio::test]
     async fn test_http_poller_lifecycle_and_invariants() {
         use std::collections::HashMap;

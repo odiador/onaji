@@ -104,12 +104,55 @@ pub fn handle_doctor(config_path: &Path) {
     let cas_dir = cache_dir.join("cas");
     if cas_dir.exists() {
         let size = dir_size(&cas_dir);
-        let count = std::fs::read_dir(&cas_dir).map(|d| d.count()).unwrap_or(0);
-        println!(
-            "  ✓ CAS Storage .............. {} across {} artifact trees",
-            format_bytes(size),
-            count
-        );
+        let mut total_archives = 0;
+        let mut valid_archives = 0;
+        let mut corrupted_archives = 0;
+
+        if let Ok(entries) = std::fs::read_dir(&cas_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("zst")
+                    || path.to_string_lossy().ends_with(".tar.zst")
+                {
+                    total_archives += 1;
+                    if let Ok(file) = std::fs::File::open(&path) {
+                        if let Ok(mut decoder) = zstd::Decoder::new(file) {
+                            use std::io::Read;
+                            let mut buf = [0u8; 512];
+                            if decoder.read(&mut buf).is_ok() {
+                                valid_archives += 1;
+                            } else {
+                                corrupted_archives += 1;
+                            }
+                        } else {
+                            corrupted_archives += 1;
+                        }
+                    } else {
+                        corrupted_archives += 1;
+                    }
+                } else if path.is_dir() {
+                    total_archives += 1;
+                    valid_archives += 1;
+                }
+            }
+        }
+
+        if corrupted_archives > 0 {
+            println!(
+                "  ⚠ CAS Storage .............. {} ({} valid, {} CORRUPTED archive(s) - run `onaji clean --all`)",
+                format_bytes(size),
+                valid_archives,
+                corrupted_archives
+            );
+        } else if total_archives > 0 {
+            println!(
+                "  ✓ CAS Storage .............. {} across {} verified artifact trees",
+                format_bytes(size),
+                total_archives
+            );
+        } else {
+            println!("  ○ CAS Storage .............. empty");
+        }
     } else {
         println!("  ○ CAS Storage .............. empty");
     }

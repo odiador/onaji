@@ -1,6 +1,6 @@
 use crate::domain::{Event, EventId, EventType, Resource, ResourceId, ResourceType};
 use crate::fingerprint::{Fingerprint, Fingerprinter};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,17 +14,39 @@ pub struct EventNormalizer {
     resource_paths: HashMap<PathBuf, ResourceId>,
     fingerprints: HashMap<ResourceId, Fingerprint>,
     file_fingerprints: HashMap<PathBuf, Fingerprint>,
+    excluded_paths: HashSet<PathBuf>,
     workspace_root: PathBuf,
 }
 
 impl EventNormalizer {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+        let root = workspace_root.as_ref().to_path_buf();
+        let mut excluded = HashSet::new();
+        let onaji_dir = root.join(".onaji");
+        if let Ok(canon) = onaji_dir.canonicalize() {
+            excluded.insert(canon);
+        } else {
+            excluded.insert(onaji_dir);
+        }
+
         Self {
             resource_paths: HashMap::new(),
             fingerprints: HashMap::new(),
             file_fingerprints: HashMap::new(),
-            workspace_root: workspace_root.as_ref().to_path_buf(),
+            excluded_paths: excluded,
+            workspace_root: root,
         }
+    }
+
+    /// Excluye rutas específicas o directorios de generación interna para prevenir feedback loops
+    pub fn exclude_path(&mut self, path: impl AsRef<Path>) {
+        let full = if path.as_ref().is_absolute() {
+            path.as_ref().to_path_buf()
+        } else {
+            self.workspace_root.join(path.as_ref())
+        };
+        let lookup = full.canonicalize().unwrap_or(full);
+        self.excluded_paths.insert(lookup);
     }
 
     /// Registra los recursos observables e inicializa sus huellas digitales base.
@@ -77,9 +99,23 @@ impl EventNormalizer {
 
     /// Normaliza un evento crudo del sistema de archivos comprobando cambio real de contenido.
     pub fn normalize_fs_event(&mut self, event_path: &Path) -> NormalizationResult {
+        // Ignorar mutaciones en .onaji o rutas excluidas para prevenir bucles de retroalimentación
+        if event_path.components().any(|c| c.as_os_str() == ".onaji") {
+            return NormalizationResult::UnrelatedPath(event_path.to_path_buf());
+        }
+
         let lookup_path = event_path
             .canonicalize()
             .unwrap_or_else(|_| event_path.to_path_buf());
+
+        if lookup_path.components().any(|c| c.as_os_str() == ".onaji")
+            || self
+                .excluded_paths
+                .iter()
+                .any(|exc| lookup_path.starts_with(exc) || event_path.starts_with(exc))
+        {
+            return NormalizationResult::UnrelatedPath(event_path.to_path_buf());
+        }
 
         // Buscamos coincidencia directa o si event_path es hijo de un directorio observado
         let matched_resource = self.find_matching_resource(&lookup_path);

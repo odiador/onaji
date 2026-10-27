@@ -223,14 +223,27 @@ pub async fn handle_run(
                 };
                 collector.finish_span(root_id, root_status);
 
-                // Save trace to .onaji/traces/latest.json
+                // Save trace atomically to .onaji/traces/latest.json
                 let trace_json = collector.to_json();
                 let trace_dest = trace_output.unwrap_or_else(|| {
                     let traces_dir = workspace_root.join(".onaji").join("traces");
                     std::fs::create_dir_all(&traces_dir).ok();
                     traces_dir.join("latest.json")
                 });
-                std::fs::write(&trace_dest, &trace_json).ok();
+
+                if let Some(parent) = trace_dest.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                    let tmp_dest = parent.join(format!(
+                        ".{}.{}.tmp",
+                        trace_dest.file_name().unwrap_or_default().to_string_lossy(),
+                        std::process::id()
+                    ));
+                    if std::fs::write(&tmp_dest, &trace_json).is_ok() {
+                        let _ = std::fs::rename(&tmp_dest, &trace_dest);
+                    }
+                } else {
+                    let _ = std::fs::write(&trace_dest, &trace_json);
+                }
 
                 if trace_format == OutputFormat::Json {
                     println!("{}", trace_json);
