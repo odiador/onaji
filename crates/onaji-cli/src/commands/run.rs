@@ -116,7 +116,8 @@ pub async fn handle_run(
             );
             }
             Some(std::sync::Arc::new(
-                onaji_core::remote::RemoteExecutionBackend::new(coordinator),
+                onaji_core::remote::RemoteExecutionBackend::new(coordinator)
+                    .with_workspace_root(workspace_root.clone()),
             ))
         } else {
             None
@@ -697,7 +698,8 @@ pub async fn handle_affected(
                 coordinator.register_worker(worker);
             }
             Some(std::sync::Arc::new(
-                onaji_core::remote::RemoteExecutionBackend::new(coordinator),
+                onaji_core::remote::RemoteExecutionBackend::new(coordinator)
+                    .with_workspace_root(workspace_root.clone()),
             ))
         } else {
             None

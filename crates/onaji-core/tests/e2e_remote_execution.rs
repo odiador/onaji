@@ -132,6 +132,7 @@ async fn test_remote_worker_container_execution() {
         ]),
         cache_key: "abcdef123456".to_string(),
         timeout_ms: 30000,
+        cache_paths: Vec::new(),
     };
 
     let report = worker.execute_assignment(&assignment).await;
@@ -158,6 +159,7 @@ async fn test_remote_worker_timeout_enforcement() {
         env: HashMap::new(),
         cache_key: "timeoutkey123".to_string(),
         timeout_ms: 50,
+        cache_paths: Vec::new(),
     };
 
     let report = worker.execute_assignment(&assignment).await;
@@ -250,6 +252,7 @@ async fn test_remote_worker_tcp_server_lifecycle() {
         env: HashMap::new(),
         cache_key: "cache_tcp_123".to_string(),
         timeout_ms: 5000,
+        cache_paths: Vec::new(),
     };
 
     let mut msg = serde_json::to_string(&assignment).unwrap();
@@ -473,4 +476,45 @@ async fn test_tcp_worker_client_and_coordinator_integration() {
     // Detener el daemon de prueba
     srv_handle.abort();
     let _ = srv_handle.await;
+}
+
+#[tokio::test]
+async fn test_remote_artifact_sync_from_worker_sandbox_to_workspace() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let ws = temp_dir.path().join("workspace");
+    let sandbox = temp_dir.path().join("sandbox");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_worker(Arc::new(WorkerDaemon::new(
+        "worker-sync",
+        &sandbox,
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    )));
+    let backend = RemoteExecutionBackend::new(coordinator).with_workspace_root(&ws);
+
+    let task = Task {
+        id: TaskId::new("produce_artifact"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "mkdir -p out && echo artifact_data > out/result.txt".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: vec![std::path::PathBuf::from("out")],
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: Some(10),
+        retries: 0,
+    };
+
+    let res = backend
+        .execute_task(&task, None, &HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(res.state, onaji_core::cache::TaskState::Success);
+    let synced = std::fs::read_to_string(ws.join("out/result.txt")).unwrap();
+    assert!(synced.contains("artifact_data"));
 }

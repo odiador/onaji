@@ -112,6 +112,7 @@ impl WorkerDaemon {
                         stderr: format!("Remote task timed out after {}ms", assignment.timeout_ms),
                         duration_ms,
                         success: false,
+                        worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                     };
                 }
             }
@@ -134,6 +135,7 @@ impl WorkerDaemon {
                     stderr,
                     duration_ms,
                     success,
+                    worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                 }
             }
             Err(err) => {
@@ -145,6 +147,7 @@ impl WorkerDaemon {
                     stderr: format!("Process execution error on worker: {}", err),
                     duration_ms,
                     success: false,
+                    worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                 }
             }
         }
@@ -181,6 +184,7 @@ impl WorkerDaemon {
                                 stderr: format!("Invalid TaskAssignment JSON: {}", err),
                                 duration_ms: 0,
                                 success: false,
+                                worker_sandbox: None,
                             };
                             if let Ok(mut resp_str) = serde_json::to_string(&report) {
                                 resp_str.push('\n');
@@ -267,6 +271,7 @@ impl WorkerHandle for TcpWorkerClient {
                     ),
                     duration_ms,
                     success: false,
+                    worker_sandbox: None,
                 };
             }
         };
@@ -285,6 +290,7 @@ impl WorkerHandle for TcpWorkerClient {
                     stderr: format!("Failed to serialize TaskAssignment: {}", err),
                     duration_ms,
                     success: false,
+                    worker_sandbox: None,
                 };
             }
         };
@@ -299,6 +305,7 @@ impl WorkerHandle for TcpWorkerClient {
                 stderr: format!("Failed to transmit task to remote worker: {}", err),
                 duration_ms,
                 success: false,
+                worker_sandbox: None,
             };
         }
         let _ = writer.flush().await;
@@ -315,6 +322,7 @@ impl WorkerHandle for TcpWorkerClient {
                         stderr: format!("Malformed response from remote worker: {}", err),
                         duration_ms,
                         success: false,
+                        worker_sandbox: None,
                     }
                 }
             },
@@ -327,6 +335,7 @@ impl WorkerHandle for TcpWorkerClient {
                     stderr: "Remote worker connection closed before report received".to_string(),
                     duration_ms,
                     success: false,
+                    worker_sandbox: None,
                 }
             }
             Err(err) => {
@@ -338,6 +347,7 @@ impl WorkerHandle for TcpWorkerClient {
                     stderr: format!("Error reading from remote worker: {}", err),
                     duration_ms,
                     success: false,
+                    worker_sandbox: None,
                 }
             }
         }

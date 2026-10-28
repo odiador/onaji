@@ -18,6 +18,8 @@ pub struct TaskAssignment {
     pub env: HashMap<String, String>,
     pub cache_key: String,
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub cache_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,4 +30,6 @@ pub struct TaskExecutionReport {
     pub stderr: String,
     pub duration_ms: u64,
     pub success: bool,
+    #[serde(default)]
+    pub worker_sandbox: Option<String>,
 }

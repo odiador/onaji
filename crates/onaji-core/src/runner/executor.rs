@@ -50,6 +50,33 @@ impl ProcessExecutor {
                         } else {
                             workspace_root.join(rel)
                         };
+                        // Normalización léxica: bloquea `..` aunque el directorio no exista aún
+                        let mut depth: i64 = 0;
+                        let mut escapes = false;
+                        if !rel.is_absolute() {
+                            for comp in rel.components() {
+                                match comp {
+                                    std::path::Component::ParentDir => {
+                                        depth -= 1;
+                                        if depth < 0 {
+                                            escapes = true;
+                                            break;
+                                        }
+                                    }
+                                    std::path::Component::Normal(_) => depth += 1,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if escapes {
+                            return Err(RunnerError::ExecutionFailed {
+                                code: Some(126),
+                                stderr: format!(
+                                    "Security violation: path traversal detected outside workspace root for '{}'",
+                                    rel.display()
+                                ),
+                            });
+                        }
                         if let (Ok(canon_cwd), Ok(canon_root)) =
                             (candidate.canonicalize(), workspace_root.canonicalize())
                         {

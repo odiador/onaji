@@ -207,3 +207,28 @@ async fn test_sandboxed_runner_async_timeout_enforcement() {
     }
     assert!(start.elapsed() < std::time::Duration::from_secs(3));
 }
+
+#[tokio::test]
+async fn test_working_dir_traversal_blocked_even_when_missing() {
+    use onaji_core::domain::{Action, Task, TaskId};
+    use onaji_core::runner::ProcessExecutor;
+    let temp = tempfile::tempdir().unwrap();
+    let task = Task {
+        id: TaskId::new("escape"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "echo hi".to_string(),
+            working_dir: Some(std::path::PathBuf::from("../../nonexistent_dir")),
+            env: std::collections::HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: None,
+        retries: 0,
+    };
+    let res = ProcessExecutor::execute(&task, temp.path(), None).await;
+    assert!(res.is_err());
+}
