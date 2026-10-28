@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, WorkerRegistration};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -5,9 +6,26 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
 
+#[async_trait]
+pub trait WorkerHandle: Send + Sync {
+    fn registration(&self) -> &WorkerRegistration;
+    async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport;
+}
+
 pub struct WorkerDaemon {
     pub registration: WorkerRegistration,
     pub sandbox_root: PathBuf,
+}
+
+#[async_trait]
+impl WorkerHandle for WorkerDaemon {
+    fn registration(&self) -> &WorkerRegistration {
+        &self.registration
+    }
+
+    async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
+        self.execute_assignment(assignment).await
+    }
 }
 
 impl WorkerDaemon {
@@ -181,6 +199,147 @@ impl WorkerDaemon {
                     }
                 }
             });
+        }
+    }
+}
+
+/// Cliente de red para comunicarse y despachar tareas a daemons de workers remotos sobre TCP
+#[derive(Clone, Debug)]
+pub struct TcpWorkerClient {
+    pub registration: WorkerRegistration,
+    pub address: String,
+}
+
+impl TcpWorkerClient {
+    pub fn new(
+        worker_id: impl Into<String>,
+        address: impl Into<String>,
+        toolchains: HashMap<String, String>,
+    ) -> Self {
+        let registration = WorkerRegistration {
+            worker_id: worker_id.into(),
+            os: "remote".to_string(),
+            arch: "remote".to_string(),
+            toolchains,
+            max_parallel_tasks: 4,
+        };
+        Self {
+            registration,
+            address: address.into(),
+        }
+    }
+
+    pub fn with_registration(registration: WorkerRegistration, address: impl Into<String>) -> Self {
+        Self {
+            registration,
+            address: address.into(),
+        }
+    }
+
+    pub async fn ping(&self) -> bool {
+        use tokio::net::TcpStream;
+        TcpStream::connect(&self.address).await.is_ok()
+    }
+}
+
+#[async_trait]
+impl WorkerHandle for TcpWorkerClient {
+    fn registration(&self) -> &WorkerRegistration {
+        &self.registration
+    }
+
+    async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpStream;
+
+        let start = Instant::now();
+        let stream = match TcpStream::connect(&self.address).await {
+            Ok(s) => s,
+            Err(err) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!(
+                        "Failed to connect to remote worker at {}: {}",
+                        self.address, err
+                    ),
+                    duration_ms,
+                    success: false,
+                };
+            }
+        };
+
+        let (reader, mut writer) = tokio::io::split(stream);
+        let mut lines = BufReader::new(reader).lines();
+
+        let mut req_str = match serde_json::to_string(assignment) {
+            Ok(s) => s,
+            Err(err) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!("Failed to serialize TaskAssignment: {}", err),
+                    duration_ms,
+                    success: false,
+                };
+            }
+        };
+        req_str.push('\n');
+
+        if let Err(err) = writer.write_all(req_str.as_bytes()).await {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            return TaskExecutionReport {
+                task_id: assignment.task_id.clone(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: format!("Failed to transmit task to remote worker: {}", err),
+                duration_ms,
+                success: false,
+            };
+        }
+        let _ = writer.flush().await;
+
+        match lines.next_line().await {
+            Ok(Some(line)) => match serde_json::from_str::<TaskExecutionReport>(&line) {
+                Ok(report) => report,
+                Err(err) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(1),
+                        stdout: String::new(),
+                        stderr: format!("Malformed response from remote worker: {}", err),
+                        duration_ms,
+                        success: false,
+                    }
+                }
+            },
+            Ok(None) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "Remote worker connection closed before report received".to_string(),
+                    duration_ms,
+                    success: false,
+                }
+            }
+            Err(err) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!("Error reading from remote worker: {}", err),
+                    duration_ms,
+                    success: false,
+                }
+            }
         }
     }
 }

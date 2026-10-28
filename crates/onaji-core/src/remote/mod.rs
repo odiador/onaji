@@ -4,4 +4,4 @@ pub mod worker;
 
 pub use backend::{ExecutionBackend, LocalExecutionBackend, RemoteExecutionBackend};
 pub use coordinator::ClusterCoordinator;
-pub use worker::WorkerDaemon;
+pub use worker::{TcpWorkerClient, WorkerDaemon, WorkerHandle};

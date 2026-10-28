@@ -393,3 +393,84 @@ async fn test_remote_coordinator_least_loaded_and_failover() {
     assert_eq!(coordinator.worker_load("worker-node-a"), 0);
     assert_eq!(coordinator.worker_load("worker-node-b"), 0);
 }
+
+#[tokio::test]
+async fn test_tcp_worker_client_and_coordinator_integration() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+
+    // 1. Iniciar un WorkerDaemon como servidor TCP real
+    let worker_daemon = Arc::new(WorkerDaemon::new(
+        "worker-tcp-live",
+        root.join("worker_tcp_sandbox"),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    ));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let server_daemon = Arc::clone(&worker_daemon);
+    let addr_str = local_addr.to_string();
+    let srv_addr = addr_str.clone();
+    let srv_handle = tokio::spawn(async move {
+        let _ = server_daemon.run_server(&srv_addr).await;
+    });
+
+    // Esperar a que el servidor TCP esté listo
+    let mut ready = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(local_addr).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(ready, "TCP worker daemon failed to bind");
+
+    // 2. Configurar el coordinador y registrar el cliente TCP
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_tcp_worker(
+        "worker-tcp-live",
+        addr_str.clone(),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    );
+
+    let workers = coordinator.list_workers();
+    assert_eq!(workers.len(), 1);
+    assert_eq!(workers[0].worker_id, "worker-tcp-live");
+
+    // 3. Despachar tarea a través de RemoteExecutionBackend sobre la red
+    let remote_backend = RemoteExecutionBackend::new(coordinator.clone());
+
+    let task = Task {
+        id: TaskId::new("network_exec_task"),
+        description: Some("Network distributed task".to_string()),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "cargo --version; echo network_tcp_execution_success".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: vec!["rust".to_string()],
+        timeout_secs: Some(10),
+        retries: 0,
+    };
+
+    let report = remote_backend
+        .execute_task(&task, None, &HashMap::new())
+        .await
+        .unwrap();
+
+    assert_eq!(report.state, onaji_core::cache::TaskState::Success);
+    assert_eq!(report.exit_code, Some(0));
+    assert!(report.stdout.contains("network_tcp_execution_success"));
+    assert_eq!(coordinator.worker_load("worker-tcp-live"), 0);
+
+    // Detener el daemon de prueba
+    srv_handle.abort();
+    let _ = srv_handle.await;
+}

@@ -1,11 +1,11 @@
-use super::worker::WorkerDaemon;
+use super::worker::{TcpWorkerClient, WorkerHandle};
 use crate::runner::RunnerError;
 use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, WorkerRegistration};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub struct ClusterCoordinator {
-    workers: Arc<RwLock<HashMap<String, Arc<WorkerDaemon>>>>,
+    workers: Arc<RwLock<HashMap<String, Arc<dyn WorkerHandle>>>>,
     active_tasks: Arc<RwLock<HashMap<String, usize>>>,
 }
 
@@ -23,9 +23,19 @@ impl ClusterCoordinator {
         }
     }
 
-    pub fn register_worker(&self, worker: Arc<WorkerDaemon>) {
+    pub fn register_worker(&self, worker: Arc<dyn WorkerHandle>) {
         let mut map = self.workers.write().unwrap();
-        map.insert(worker.registration.worker_id.clone(), worker);
+        map.insert(worker.registration().worker_id.clone(), worker);
+    }
+
+    pub fn register_tcp_worker(
+        &self,
+        worker_id: impl Into<String>,
+        address: impl Into<String>,
+        toolchains: HashMap<String, String>,
+    ) {
+        let client = Arc::new(TcpWorkerClient::new(worker_id, address, toolchains));
+        self.register_worker(client);
     }
 
     pub fn unregister_worker(&self, worker_id: &str) {
@@ -37,7 +47,7 @@ impl ClusterCoordinator {
 
     pub fn list_workers(&self) -> Vec<WorkerRegistration> {
         let map = self.workers.read().unwrap();
-        map.values().map(|w| w.registration.clone()).collect()
+        map.values().map(|w| w.registration().clone()).collect()
     }
 
     pub fn worker_load(&self, worker_id: &str) -> usize {
@@ -50,15 +60,15 @@ impl ClusterCoordinator {
     pub fn find_compatible_workers(
         &self,
         required_toolchain: Option<&str>,
-    ) -> Vec<Arc<WorkerDaemon>> {
+    ) -> Vec<Arc<dyn WorkerHandle>> {
         let map = self.workers.read().unwrap();
         let loads = self.active_tasks.read().unwrap();
 
-        let mut compatible: Vec<Arc<WorkerDaemon>> = map
+        let mut compatible: Vec<Arc<dyn WorkerHandle>> = map
             .values()
             .filter(|w| {
                 if let Some(req) = required_toolchain {
-                    w.registration.toolchains.contains_key(req)
+                    w.registration().toolchains.contains_key(req)
                 } else {
                     true
                 }
@@ -66,14 +76,14 @@ impl ClusterCoordinator {
             .cloned()
             .collect();
 
-        compatible.sort_by_key(|w| loads.get(&w.registration.worker_id).copied().unwrap_or(0));
+        compatible.sort_by_key(|w| loads.get(&w.registration().worker_id).copied().unwrap_or(0));
         compatible
     }
 
     pub fn find_compatible_worker(
         &self,
         required_toolchain: Option<&str>,
-    ) -> Option<Arc<WorkerDaemon>> {
+    ) -> Option<Arc<dyn WorkerHandle>> {
         self.find_compatible_workers(required_toolchain)
             .into_iter()
             .next()
@@ -106,7 +116,7 @@ impl ClusterCoordinator {
         let mut last_report = None;
 
         for worker in candidates {
-            let worker_id = worker.registration.worker_id.clone();
+            let worker_id = worker.registration().worker_id.clone();
 
             // Incrementar contador de tareas activas del worker seleccionado
             {

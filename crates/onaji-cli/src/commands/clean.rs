@@ -13,10 +13,29 @@ pub fn handle_completions(shell: clap_complete::Shell) {
 pub fn handle_clean(
     config_path: &Path,
     all: bool,
+    traces: bool,
     task_id_filter: Option<String>,
     max_size_limit: Option<String>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
+
+    if traces || all {
+        let traces_dir = workspace_root.join(".onaji").join("traces");
+        if traces_dir.exists() {
+            let size = dir_size(&traces_dir);
+            let _ = std::fs::remove_dir_all(&traces_dir);
+            println!(
+                "✓ Purged {} of execution traces at '{}'",
+                format_bytes(size),
+                traces_dir.display()
+            );
+        } else if traces && !all {
+            println!("○ No execution traces found at '{}'", traces_dir.display());
+        }
+        if traces && !all && task_id_filter.is_none() && max_size_limit.is_none() {
+            return;
+        }
+    }
 
     if let Some(limit_str) = max_size_limit {
         let max_bytes = match parse_size(&limit_str) {

@@ -30,6 +30,7 @@ async fn main() {
             since,
             tests,
             remote,
+            workers,
             env,
         } => {
             handle_run(
@@ -44,6 +45,7 @@ async fn main() {
                 trace_format,
                 trace_output,
                 remote,
+                workers,
                 env,
             )
             .await
@@ -55,6 +57,8 @@ async fn main() {
             run,
             fail_fast,
             output,
+            remote,
+            workers,
             env,
         } => {
             handle_affected(
@@ -65,6 +69,8 @@ async fn main() {
                 run,
                 fail_fast,
                 output,
+                remote,
+                workers,
                 env,
             )
             .await
@@ -95,9 +101,10 @@ async fn main() {
         Commands::Completions { shell } => handle_completions(shell),
         Commands::Clean {
             all,
+            traces,
             task,
             max_size,
-        } => handle_clean(&cli.config, all, task, max_size),
+        } => handle_clean(&cli.config, all, traces, task, max_size),
         Commands::Hook { command } => handle_hook(&cli.config, command),
     }
 }

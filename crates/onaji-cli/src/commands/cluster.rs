@@ -47,13 +47,28 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
         }
         WorkerCommands::Status => {
             println!("=== Local Worker Status ===");
-            println!("Worker ID:  worker-{}", std::env::consts::OS);
-            println!("Status:     Active (0 running tasks)");
+            let sandbox = workspace_root.join(".onaji").join("worker_sandbox");
+            let is_initialized = sandbox.exists();
+            println!("Worker ID:    worker-{}", std::env::consts::OS);
+            println!(
+                "OS / Arch:    {} / {}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            println!("Sandbox:      {}", sandbox.display());
+            println!(
+                "Status:       {}",
+                if is_initialized {
+                    "Configured (sandbox ready)"
+                } else {
+                    "Idle (no sandbox allocated)"
+                }
+            );
         }
         WorkerCommands::List => {
             println!("=== Registered Cluster Workers ===");
             println!(
-                "  • worker-local (OS: {}, Arch: {}, parallel: 4)",
+                "  • worker-local (OS: {}, Arch: {}, max slots: 4)",
                 std::env::consts::OS,
                 std::env::consts::ARCH
             );

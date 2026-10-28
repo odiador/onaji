@@ -137,6 +137,13 @@ pub enum Commands {
         remote: bool,
 
         #[arg(
+            long = "worker",
+            value_name = "ADDR",
+            help = "Remote worker daemon address(es) to register (e.g. '127.0.0.1:9099')"
+        )]
+        workers: Vec<String>,
+
+        #[arg(
             short = 'e',
             long = "env",
             value_parser = parse_key_val,
@@ -184,6 +191,16 @@ pub enum Commands {
             help = "Output formatting: text, github, or json"
         )]
         output: OutputFormat,
+
+        #[arg(long, help = "Dispatch task execution to remote cluster workers")]
+        remote: bool,
+
+        #[arg(
+            long = "worker",
+            value_name = "ADDR",
+            help = "Remote worker daemon address(es) to register (e.g. '127.0.0.1:9099')"
+        )]
+        workers: Vec<String>,
 
         #[arg(
             short = 'e',
@@ -337,6 +354,9 @@ pub enum Commands {
     Clean {
         #[arg(long, help = "Purge entire cache including global cache")]
         all: bool,
+
+        #[arg(long, help = "Purge execution telemetry traces in .onaji/traces/")]
+        traces: bool,
 
         #[arg(short, long, help = "Invalidate cache for a specific task ID")]
         task: Option<String>,
