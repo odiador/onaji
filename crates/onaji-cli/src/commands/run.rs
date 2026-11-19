@@ -7,6 +7,72 @@ use onaji_core::graph::{ImpactAnalyzer, ImpactReport};
 use onaji_core::scheduler::TaskScheduler;
 use std::path::{Path, PathBuf};
 
+fn build_remote_backend(
+    manifest: &onaji_core::RawManifest,
+    workspace_root: &Path,
+    remote: bool,
+    workers: &[String],
+    verbose_text: bool,
+) -> Option<std::sync::Arc<dyn onaji_core::remote::ExecutionBackend>> {
+    if !remote && workers.is_empty() {
+        return None;
+    }
+
+    let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
+    let manifest_count = coordinator.register_manifest_workers(manifest);
+    if verbose_text && manifest_count > 0 {
+        println!(
+            "⚡ [remote] Registered {} cluster worker(s) from manifest.",
+            manifest_count
+        );
+    }
+
+    for (idx, addr) in workers.iter().enumerate() {
+        let id = format!("remote-worker-{}", idx + 1);
+        coordinator.register_tcp_worker(
+            &id,
+            addr,
+            std::collections::HashMap::from([
+                ("rust".to_string(), "installed".to_string()),
+                ("sh".to_string(), "installed".to_string()),
+                ("android_sdk".to_string(), "installed".to_string()),
+            ]),
+        );
+        if verbose_text {
+            println!(
+                "⚡ [remote] Registered remote worker node '{}' at {}",
+                id, addr
+            );
+        }
+    }
+
+    if coordinator.list_workers().is_empty() {
+        let worker_sandbox = workspace_root.join(".onaji").join("worker_sandbox");
+        let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
+            "worker-local",
+            worker_sandbox,
+            std::collections::HashMap::from([
+                ("rust".to_string(), "installed".to_string()),
+                ("sh".to_string(), "installed".to_string()),
+                ("android_sdk".to_string(), "installed".to_string()),
+            ]),
+        ));
+        coordinator.register_worker(worker);
+    }
+
+    if verbose_text {
+        println!(
+            "⚡ [remote] Dispatching tasks through cluster coordinator ({} worker(s) online).",
+            coordinator.list_workers().len()
+        );
+    }
+
+    Some(std::sync::Arc::new(
+        onaji_core::remote::RemoteExecutionBackend::new(coordinator)
+            .with_workspace_root(workspace_root.to_path_buf()),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_run(
     config_path: &Path,
@@ -24,7 +90,7 @@ pub async fn handle_run(
     extra_env: Vec<(String, String)>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
-    let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
+    let (manifest, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
         Err(err) => {
             match output {
@@ -74,54 +140,13 @@ pub async fn handle_run(
         None
     };
 
-    let backend_opt: Option<std::sync::Arc<dyn onaji_core::remote::ExecutionBackend>> =
-        if remote || !workers.is_empty() {
-            let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
-            if !workers.is_empty() {
-                for (idx, addr) in workers.iter().enumerate() {
-                    let id = format!("remote-worker-{}", idx + 1);
-                    coordinator.register_tcp_worker(
-                        &id,
-                        addr,
-                        std::collections::HashMap::from([
-                            ("rust".to_string(), "installed".to_string()),
-                            ("sh".to_string(), "installed".to_string()),
-                            ("android_sdk".to_string(), "installed".to_string()),
-                        ]),
-                    );
-                    if output == OutputFormat::Text {
-                        println!(
-                            "⚡ [remote] Registered remote worker node '{}' at {}",
-                            id, addr
-                        );
-                    }
-                }
-            } else {
-                let worker_sandbox = workspace_root.join(".onaji").join("worker_sandbox");
-                let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
-                    "worker-local",
-                    worker_sandbox,
-                    std::collections::HashMap::from([
-                        ("rust".to_string(), "installed".to_string()),
-                        ("sh".to_string(), "installed".to_string()),
-                        ("android_sdk".to_string(), "installed".to_string()),
-                    ]),
-                ));
-                coordinator.register_worker(worker);
-            }
-            if output == OutputFormat::Text {
-                println!(
-                "⚡ [remote] Dispatching tasks through cluster coordinator ({} worker(s) online).",
-                coordinator.list_workers().len()
-            );
-            }
-            Some(std::sync::Arc::new(
-                onaji_core::remote::RemoteExecutionBackend::new(coordinator)
-                    .with_workspace_root(workspace_root.clone()),
-            ))
-        } else {
-            None
-        };
+    let backend_opt = build_remote_backend(
+        &manifest,
+        &workspace_root,
+        remote,
+        &workers,
+        output == OutputFormat::Text,
+    );
 
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler =
@@ -562,7 +587,7 @@ pub async fn handle_affected(
     extra_env: Vec<(String, String)>,
 ) {
     let workspace_root = resolve_workspace_root(config_path);
-    let (_manifest, dag) = match ConfigLoader::load_from_file(config_path) {
+    let (manifest, dag) = match ConfigLoader::load_from_file(config_path) {
         Ok(res) => res,
         Err(err) => {
             eprintln!("✗ Error loading '{}': {}", config_path.display(), err);
@@ -668,42 +693,13 @@ pub async fn handle_affected(
         );
     }
 
-    let backend_opt: Option<std::sync::Arc<dyn onaji_core::remote::ExecutionBackend>> =
-        if remote || !workers.is_empty() {
-            let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
-            if !workers.is_empty() {
-                for (idx, addr) in workers.iter().enumerate() {
-                    let id = format!("remote-worker-{}", idx + 1);
-                    coordinator.register_tcp_worker(
-                        &id,
-                        addr,
-                        std::collections::HashMap::from([
-                            ("rust".to_string(), "installed".to_string()),
-                            ("sh".to_string(), "installed".to_string()),
-                            ("android_sdk".to_string(), "installed".to_string()),
-                        ]),
-                    );
-                }
-            } else {
-                let worker_sandbox = workspace_root.join(".onaji").join("worker_sandbox");
-                let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
-                    "worker-local",
-                    worker_sandbox,
-                    std::collections::HashMap::from([
-                        ("rust".to_string(), "installed".to_string()),
-                        ("sh".to_string(), "installed".to_string()),
-                        ("android_sdk".to_string(), "installed".to_string()),
-                    ]),
-                ));
-                coordinator.register_worker(worker);
-            }
-            Some(std::sync::Arc::new(
-                onaji_core::remote::RemoteExecutionBackend::new(coordinator)
-                    .with_workspace_root(workspace_root.clone()),
-            ))
-        } else {
-            None
-        };
+    let backend_opt = build_remote_backend(
+        &manifest,
+        &workspace_root,
+        remote,
+        &workers,
+        output == OutputFormat::Text,
+    );
 
     let mut cache = ExecutionCache::load_or_new(&workspace_root);
     let mut scheduler =

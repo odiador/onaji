@@ -38,6 +38,17 @@ impl ClusterCoordinator {
         self.register_worker(client);
     }
 
+    pub fn register_manifest_workers(&self, manifest: &crate::config::RawManifest) -> usize {
+        let mut count = 0;
+        if let Some(cluster) = &manifest.cluster {
+            for w in &cluster.workers {
+                self.register_tcp_worker(&w.id, &w.address, w.toolchains.clone());
+                count += 1;
+            }
+        }
+        count
+    }
+
     pub fn unregister_worker(&self, worker_id: &str) {
         let mut map = self.workers.write().unwrap();
         map.remove(worker_id);

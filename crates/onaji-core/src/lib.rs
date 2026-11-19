@@ -23,7 +23,7 @@ pub use adapter::{
     GradleAdapter, InspectionProperty, InspectionResult, OpenApiAdapter, ValidationResult,
 };
 pub use cache::{CacheKey, ExecutionCache, TaskExecutionRecord, TaskState};
-pub use config::{ConfigError, ConfigLoader, RawManifest};
+pub use config::{ConfigError, ConfigLoader, RawCluster, RawManifest, RawWorkerConfig};
 pub use daemon::{DaemonServer, Dispatcher};
 pub use dashboard::*;
 pub use domain::*;

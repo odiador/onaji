@@ -21,7 +21,22 @@ pub fn open_in_browser(url: &str) {
 
 pub async fn handle_dashboard(config_path: &Path, port: u16, open_browser: bool) {
     let workspace_root = resolve_workspace_root(config_path);
-    let server = DashboardServer::new(port).with_workspace_root(workspace_root);
+    let mut server = DashboardServer::new(port).with_workspace_root(workspace_root);
+    if config_path.exists() {
+        if let Ok((manifest, _)) = onaji_core::config::ConfigLoader::load_from_file(config_path) {
+            if manifest
+                .cluster
+                .as_ref()
+                .map(|c| !c.workers.is_empty())
+                .unwrap_or(false)
+            {
+                let coordinator =
+                    std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
+                coordinator.register_manifest_workers(&manifest);
+                server = server.with_coordinator(coordinator);
+            }
+        }
+    }
 
     if open_browser {
         let url = format!("http://localhost:{}", port);

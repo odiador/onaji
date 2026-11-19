@@ -64,11 +64,78 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
                     "Idle (no sandbox allocated)"
                 }
             );
+
+            if config_path.exists() {
+                if let Ok((manifest, _)) =
+                    onaji_core::config::ConfigLoader::load_from_file(config_path)
+                {
+                    if let Some(cluster) = &manifest.cluster {
+                        if !cluster.workers.is_empty() {
+                            println!(
+                                "\n=== Remote Cluster Workers ({} configured) ===",
+                                cluster.workers.len()
+                            );
+                            for w in &cluster.workers {
+                                let client = onaji_core::remote::TcpWorkerClient::new(
+                                    &w.id,
+                                    &w.address,
+                                    w.toolchains.clone(),
+                                );
+                                match client
+                                    .ping_latency(std::time::Duration::from_millis(1000))
+                                    .await
+                                {
+                                    Some(ms) => println!(
+                                        "  • {:<20} {} — ONLINE ({} ms)",
+                                        w.id, w.address, ms
+                                    ),
+                                    None => println!(
+                                        "  • {:<20} {} — OFFLINE (unreachable)",
+                                        w.id, w.address
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         WorkerCommands::List => {
             println!("=== Registered Cluster Workers ===");
+            if config_path.exists() {
+                if let Ok((manifest, _)) =
+                    onaji_core::config::ConfigLoader::load_from_file(config_path)
+                {
+                    if let Some(cluster) = &manifest.cluster {
+                        for w in &cluster.workers {
+                            let client = onaji_core::remote::TcpWorkerClient::new(
+                                &w.id,
+                                &w.address,
+                                w.toolchains.clone(),
+                            );
+                            let status = match client
+                                .ping_latency(std::time::Duration::from_millis(1000))
+                                .await
+                            {
+                                Some(ms) => format!("ONLINE {}ms", ms),
+                                None => "OFFLINE".to_string(),
+                            };
+                            let mut tcs: Vec<&str> =
+                                w.toolchains.keys().map(|s| s.as_str()).collect();
+                            tcs.sort_unstable();
+                            println!(
+                                "  • {} ({}) [{}] toolchains: [{}]",
+                                w.id,
+                                w.address,
+                                status,
+                                tcs.join(", ")
+                            );
+                        }
+                    }
+                }
+            }
             println!(
-                "  • worker-local (OS: {}, Arch: {}, max slots: 4)",
+                "  • worker-local (local fallback, OS: {}, Arch: {}, max slots: 4)",
                 std::env::consts::OS,
                 std::env::consts::ARCH
             );

@@ -518,3 +518,215 @@ async fn test_remote_artifact_sync_from_worker_sandbox_to_workspace() {
     let synced = std::fs::read_to_string(ws.join("out/result.txt")).unwrap();
     assert!(synced.contains("artifact_data"));
 }
+
+#[tokio::test]
+async fn test_remote_artifact_sync_blocks_path_traversal_and_escaping_symlink() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let ws = temp_dir.path().join("workspace");
+    let sandbox = temp_dir.path().join("sandbox");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_worker(Arc::new(WorkerDaemon::new(
+        "worker-sec",
+        &sandbox,
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    )));
+    let backend = RemoteExecutionBackend::new(coordinator).with_workspace_root(&ws);
+
+    // Caso A: cache_paths con `..` debe bloquearse con code 126
+    let traversal_task = Task {
+        id: TaskId::new("traversal_artifact"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "echo ok".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: vec![std::path::PathBuf::from("../escape.txt")],
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: Some(10),
+        retries: 0,
+    };
+    let err_a = backend
+        .execute_task(&traversal_task, None, &HashMap::new())
+        .await
+        .unwrap_err();
+    match err_a {
+        onaji_core::runner::RunnerError::ExecutionFailed { code, .. } => {
+            assert_eq!(code, Some(126));
+        }
+        other => panic!("Expected ExecutionFailed(126), got {:?}", other),
+    }
+
+    // Caso B: symlink dentro de cache_paths apuntando fuera del sandbox debe bloquearse
+    #[cfg(unix)]
+    {
+        let secret_file = temp_dir.path().join("secret.txt");
+        std::fs::write(&secret_file, "TOP_SECRET").unwrap();
+
+        let symlink_task = Task {
+            id: TaskId::new("symlink_escape_artifact"),
+            description: None,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            action: Action::Command {
+                run: format!("mkdir -p out && ln -sf {} out/leak", secret_file.display()),
+                working_dir: None,
+                env: HashMap::new(),
+            },
+            cache_paths: vec![std::path::PathBuf::from("out")],
+            priority: onaji_core::TaskPriority::Normal,
+            tags: Vec::new(),
+            timeout_secs: Some(10),
+            retries: 0,
+        };
+        let err_b = backend
+            .execute_task(&symlink_task, None, &HashMap::new())
+            .await
+            .unwrap_err();
+        match err_b {
+            onaji_core::runner::RunnerError::ExecutionFailed { code, .. } => {
+                assert_eq!(code, Some(126));
+            }
+            other => panic!("Expected ExecutionFailed(126), got {:?}", other),
+        }
+        assert!(!ws.join("out/leak").exists());
+    }
+}
+
+#[tokio::test]
+async fn test_declarative_cluster_workers_from_manifest_and_ping_latency() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+
+    // 1. Levantar un WorkerDaemon activo en puerto efímero
+    let worker_daemon = Arc::new(WorkerDaemon::new(
+        "build-linux-01",
+        root.join("sandbox_live"),
+        HashMap::from([
+            ("rust".to_string(), "installed".to_string()),
+            ("sh".to_string(), "installed".to_string()),
+        ]),
+    ));
+    let listener_live = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let live_addr = listener_live.local_addr().unwrap();
+    drop(listener_live);
+
+    let srv_addr = live_addr.to_string();
+    let srv_worker = Arc::clone(&worker_daemon);
+    let srv_handle = tokio::spawn(async move {
+        let _ = srv_worker.run_server(&srv_addr).await;
+    });
+
+    let mut ready = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(live_addr).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(ready, "Live TCP worker did not bind in time");
+
+    // 2. Obtener un puerto cerrado para simular worker offline
+    let listener_dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = listener_dead.local_addr().unwrap();
+    drop(listener_dead);
+
+    // 3. Parsear YAML con cluster.workers usando tanto lista como mapa en toolchains
+    let yaml = format!(
+        r#"
+version: "1"
+name: "declarative_cluster_test"
+cluster:
+  workers:
+    - id: build-linux-01
+      address: "{live_addr}"
+      toolchains: ["rust", "sh"]
+    - id: build-android-offline
+      address: "{dead_addr}"
+      toolchains:
+        android_sdk: "34"
+tasks:
+  hello_rust:
+    run: "cargo --version; echo manifest_cluster_ok"
+"#
+    );
+
+    let (manifest, _dag) = onaji_core::config::ConfigLoader::load_from_str(&yaml).unwrap();
+    let cluster = manifest.cluster.as_ref().expect("cluster section present");
+    assert_eq!(cluster.workers.len(), 2);
+    assert_eq!(
+        cluster.workers[0]
+            .toolchains
+            .get("rust")
+            .map(String::as_str),
+        Some("installed")
+    );
+    assert_eq!(
+        cluster.workers[1]
+            .toolchains
+            .get("android_sdk")
+            .map(String::as_str),
+        Some("34")
+    );
+
+    // 4. Verificar ping_latency con timeout en worker vivo y muerto
+    let live_client = onaji_core::remote::TcpWorkerClient::new(
+        &cluster.workers[0].id,
+        &cluster.workers[0].address,
+        cluster.workers[0].toolchains.clone(),
+    );
+    let dead_client = onaji_core::remote::TcpWorkerClient::new(
+        &cluster.workers[1].id,
+        &cluster.workers[1].address,
+        cluster.workers[1].toolchains.clone(),
+    );
+    assert!(live_client
+        .ping_latency(std::time::Duration::from_secs(2))
+        .await
+        .is_some());
+    let dead_start = std::time::Instant::now();
+    assert!(dead_client
+        .ping_latency(std::time::Duration::from_millis(800))
+        .await
+        .is_none());
+    assert!(dead_start.elapsed() < std::time::Duration::from_secs(2));
+
+    // 5. Registrar workers declarativos y despachar tarea por RemoteExecutionBackend
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    let registered = coordinator.register_manifest_workers(&manifest);
+    assert_eq!(registered, 2);
+
+    let backend = RemoteExecutionBackend::new(coordinator);
+    let task = Task {
+        id: TaskId::new("hello_rust"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "cargo --version; echo manifest_cluster_ok".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: Some(10),
+        retries: 0,
+    };
+
+    let res = backend
+        .execute_task(&task, None, &HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(res.state, onaji_core::cache::TaskState::Success);
+    assert!(res.stdout.contains("manifest_cluster_ok"));
+
+    srv_handle.abort();
+    let _ = srv_handle.await;
+}

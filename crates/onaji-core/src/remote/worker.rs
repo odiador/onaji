@@ -240,9 +240,19 @@ impl TcpWorkerClient {
         }
     }
 
-    pub async fn ping(&self) -> bool {
+    pub async fn ping_latency(&self, timeout: std::time::Duration) -> Option<u64> {
         use tokio::net::TcpStream;
-        TcpStream::connect(&self.address).await.is_ok()
+        let start = Instant::now();
+        match tokio::time::timeout(timeout, TcpStream::connect(&self.address)).await {
+            Ok(Ok(_)) => Some(start.elapsed().as_millis() as u64),
+            _ => None,
+        }
+    }
+
+    pub async fn ping(&self) -> bool {
+        self.ping_latency(std::time::Duration::from_secs(5))
+            .await
+            .is_some()
     }
 }
 

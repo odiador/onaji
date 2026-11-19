@@ -46,6 +46,9 @@ async fn test_web_dashboard_server_endpoints() {
     assert!(res_str.contains("text/html"));
     assert!(res_str.contains("ONΛJI"));
     assert!(res_str.contains("Interactive Causal DAG Visualizer"));
+    assert!(res_str.contains("data.evicted_count"));
+    assert!(res_str.contains("data.evicted_bytes"));
+    assert!(!res_str.contains("evicted_packages_count"));
 
     // 2. Test GET /api/status (JSON API)
     let mut stream2 = TcpStream::connect(("127.0.0.1", port))

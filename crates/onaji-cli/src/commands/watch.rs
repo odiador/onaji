@@ -56,7 +56,17 @@ pub async fn handle_watch(
     println!("\nWatching for changes... (Press Ctrl+C to stop)\n");
 
     let (event_sender, _dash_handle) = if let Some(port) = dashboard_port {
-        let server = DashboardServer::new(port).with_workspace_root(&workspace_root);
+        let mut server = DashboardServer::new(port).with_workspace_root(&workspace_root);
+        if manifest
+            .cluster
+            .as_ref()
+            .map(|c| !c.workers.is_empty())
+            .unwrap_or(false)
+        {
+            let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
+            coordinator.register_manifest_workers(&manifest);
+            server = server.with_coordinator(coordinator);
+        }
         let sender = server.event_sender();
         let srv = server.clone();
         let handle = tokio::spawn(async move {

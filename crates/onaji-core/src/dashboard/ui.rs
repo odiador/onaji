@@ -228,7 +228,7 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         if (res.ok) {
           const data = await res.json();
           feedback.style.color = 'var(--success)';
-          feedback.innerText = `Pruned ${data.evicted_packages_count} packages (${formatBytes(data.freed_bytes)} freed)`;
+          feedback.innerText = `Pruned ${data.evicted_count} packages (${formatBytes(data.evicted_bytes)} freed)`;
           updateDashboard();
         } else {
           feedback.style.color = 'var(--failed)';

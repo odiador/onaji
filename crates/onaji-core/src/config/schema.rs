@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +11,42 @@ pub struct RawManifest {
     pub artifacts: HashMap<String, RawArtifact>,
     #[serde(default)]
     pub tasks: HashMap<String, RawTask>,
+    #[serde(default)]
+    pub cluster: Option<RawCluster>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawCluster {
+    #[serde(default)]
+    pub workers: Vec<RawWorkerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawWorkerConfig {
+    pub id: String,
+    pub address: String,
+    #[serde(default, deserialize_with = "deserialize_toolchains")]
+    pub toolchains: HashMap<String, String>,
+}
+
+fn deserialize_toolchains<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ToolchainsInput {
+        Map(HashMap<String, String>),
+        List(Vec<String>),
+    }
+
+    match ToolchainsInput::deserialize(deserializer)? {
+        ToolchainsInput::Map(m) => Ok(m),
+        ToolchainsInput::List(list) => Ok(list
+            .into_iter()
+            .map(|item| (item, "installed".to_string()))
+            .collect()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

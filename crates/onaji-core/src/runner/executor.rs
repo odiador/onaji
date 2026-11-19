@@ -1,7 +1,8 @@
 use crate::cache::{CacheKey, TaskState};
 use crate::domain::{Action, Task, TaskId};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 use thiserror::Error;
 use tokio::process::Command;
@@ -26,6 +27,57 @@ pub struct TaskExecutionResult {
     pub cache_key: Option<CacheKey>,
 }
 
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    let has_root = path.has_root();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(parts.last(), Some(Component::Normal(_))) {
+                    parts.pop();
+                } else if !has_root {
+                    parts.push(comp);
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.iter().collect()
+}
+
+fn resolve_for_confinement(path: &Path) -> PathBuf {
+    let norm = normalize_lexical(path);
+    if let Ok(canon) = norm.canonicalize() {
+        return canon;
+    }
+    let mut missing: Vec<OsString> = Vec::new();
+    let mut cursor = norm.as_path();
+    while !cursor.exists() {
+        if let Some(name) = cursor.file_name() {
+            missing.push(name.to_os_string());
+        } else {
+            break;
+        }
+        match cursor.parent() {
+            Some(p) if !p.as_os_str().is_empty() => cursor = p,
+            _ => {
+                if !norm.has_root() {
+                    cursor = Path::new(".");
+                }
+                break;
+            }
+        }
+    }
+    let mut resolved = cursor
+        .canonicalize()
+        .unwrap_or_else(|_| cursor.to_path_buf());
+    for seg in missing.into_iter().rev() {
+        resolved.push(seg);
+    }
+    resolved
+}
+
 pub struct ProcessExecutor;
 
 impl ProcessExecutor {
@@ -45,30 +97,58 @@ impl ProcessExecutor {
                 // 1. Validar y confinar working_dir contra path traversal
                 let cwd = match working_dir {
                     Some(rel) => {
+                        let canon_root = workspace_root
+                            .canonicalize()
+                            .unwrap_or_else(|_| resolve_for_confinement(workspace_root));
+
+                        if !rel.is_absolute() {
+                            let mut prefix = canon_root.clone();
+                            for comp in rel.components() {
+                                match comp {
+                                    Component::CurDir => {}
+                                    Component::ParentDir => {
+                                        if !prefix.pop() || !prefix.starts_with(&canon_root) {
+                                            return Err(RunnerError::ExecutionFailed {
+                                                code: Some(126),
+                                                stderr: format!(
+                                                    "Security violation: path traversal detected outside workspace root for '{}'",
+                                                    rel.display()
+                                                ),
+                                            });
+                                        }
+                                    }
+                                    Component::Normal(seg) => {
+                                        prefix.push(seg);
+                                        if std::fs::symlink_metadata(&prefix)
+                                            .map(|m| m.file_type().is_symlink())
+                                            .unwrap_or(false)
+                                        {
+                                            let target = resolve_for_confinement(&prefix);
+                                            if !target.starts_with(&canon_root) {
+                                                return Err(RunnerError::ExecutionFailed {
+                                                    code: Some(126),
+                                                    stderr: format!(
+                                                        "Security violation: path traversal detected outside workspace root for '{}'",
+                                                        rel.display()
+                                                    ),
+                                                });
+                                            }
+                                            prefix = target;
+                                        }
+                                    }
+                                    Component::RootDir | Component::Prefix(_) => {}
+                                }
+                            }
+                        }
+
                         let candidate = if rel.is_absolute() {
                             rel.to_path_buf()
                         } else {
                             workspace_root.join(rel)
                         };
-                        // Normalización léxica: bloquea `..` aunque el directorio no exista aún
-                        let mut depth: i64 = 0;
-                        let mut escapes = false;
-                        if !rel.is_absolute() {
-                            for comp in rel.components() {
-                                match comp {
-                                    std::path::Component::ParentDir => {
-                                        depth -= 1;
-                                        if depth < 0 {
-                                            escapes = true;
-                                            break;
-                                        }
-                                    }
-                                    std::path::Component::Normal(_) => depth += 1,
-                                    _ => {}
-                                }
-                            }
-                        }
-                        if escapes {
+
+                        let resolved_candidate = resolve_for_confinement(&candidate);
+                        if !resolved_candidate.starts_with(&canon_root) {
                             return Err(RunnerError::ExecutionFailed {
                                 code: Some(126),
                                 stderr: format!(
@@ -77,9 +157,8 @@ impl ProcessExecutor {
                                 ),
                             });
                         }
-                        if let (Ok(canon_cwd), Ok(canon_root)) =
-                            (candidate.canonicalize(), workspace_root.canonicalize())
-                        {
+
+                        if let Ok(canon_cwd) = candidate.canonicalize() {
                             if !canon_cwd.starts_with(&canon_root) {
                                 return Err(RunnerError::ExecutionFailed {
                                     code: Some(126),
@@ -90,6 +169,7 @@ impl ProcessExecutor {
                                 });
                             }
                         }
+
                         candidate
                     }
                     None => workspace_root.to_path_buf(),

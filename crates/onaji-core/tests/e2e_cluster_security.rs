@@ -231,4 +231,86 @@ async fn test_working_dir_traversal_blocked_even_when_missing() {
     };
     let res = ProcessExecutor::execute(&task, temp.path(), None).await;
     assert!(res.is_err());
+
+    // Ruta absoluta inexistente fuera del workspace -> debe bloquearse con code 126
+    let abs_missing_task = Task {
+        id: TaskId::new("escape_abs_missing"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "echo hi".to_string(),
+            working_dir: Some(std::path::PathBuf::from(
+                "/tmp/onaji_missing_outside_dir_xyz",
+            )),
+            env: std::collections::HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: None,
+        retries: 0,
+    };
+    let abs_res = ProcessExecutor::execute(&abs_missing_task, temp.path(), None).await;
+    match abs_res.unwrap_err() {
+        onaji_core::runner::RunnerError::ExecutionFailed { code, .. } => {
+            assert_eq!(code, Some(126));
+        }
+        other => panic!("Expected ExecutionFailed(126), got {:?}", other),
+    }
+
+    // Subdirectorio relativo inexistente dentro del workspace -> pasa confinamiento y falla al spawn (Io)
+    let inside_missing_task = Task {
+        id: TaskId::new("inside_missing"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "echo hi".to_string(),
+            working_dir: Some(std::path::PathBuf::from("subdir/missing")),
+            env: std::collections::HashMap::new(),
+        },
+        cache_paths: Vec::new(),
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: None,
+        retries: 0,
+    };
+    let inside_res = ProcessExecutor::execute(&inside_missing_task, temp.path(), None).await;
+    assert!(matches!(
+        inside_res.unwrap_err(),
+        onaji_core::runner::RunnerError::Io(_)
+    ));
+
+    // Symlink dentro del workspace apuntando fuera con subdirectorio inexistente -> debe bloquearse con 126
+    #[cfg(unix)]
+    {
+        let outside_target = tempfile::tempdir().unwrap();
+        let link_path = temp.path().join("outside_link");
+        std::os::unix::fs::symlink(outside_target.path(), &link_path).unwrap();
+
+        let symlink_task = Task {
+            id: TaskId::new("escape_symlink_missing"),
+            description: None,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            action: Action::Command {
+                run: "echo hi".to_string(),
+                working_dir: Some(std::path::PathBuf::from("outside_link/nonexistent")),
+                env: std::collections::HashMap::new(),
+            },
+            cache_paths: Vec::new(),
+            priority: onaji_core::TaskPriority::Normal,
+            tags: Vec::new(),
+            timeout_secs: None,
+            retries: 0,
+        };
+        let sym_res = ProcessExecutor::execute(&symlink_task, temp.path(), None).await;
+        match sym_res.unwrap_err() {
+            onaji_core::runner::RunnerError::ExecutionFailed { code, .. } => {
+                assert_eq!(code, Some(126));
+            }
+            other => panic!("Expected ExecutionFailed(126), got {:?}", other),
+        }
+    }
 }

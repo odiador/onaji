@@ -3,7 +3,7 @@ use crate::domain::{Action, Task};
 use crate::runner::{ProcessExecutor, RunnerError, TaskExecutionResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[async_trait]
@@ -38,18 +38,118 @@ impl<'a> ExecutionBackend for LocalExecutionBackend<'a> {
     }
 }
 
-fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn copy_dir_all_confined(src: &Path, dst: &Path, sandbox_canon: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&from, &to)?;
-        } else {
+        let meta = std::fs::symlink_metadata(&from)?;
+        if meta.file_type().is_symlink() {
+            let target = from.canonicalize().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Security violation: unsafe symlink '{}' in worker sandbox",
+                        from.display()
+                    ),
+                )
+            })?;
+            if !target.starts_with(sandbox_canon) || target.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Security violation: unsafe symlink '{}' in worker sandbox",
+                        from.display()
+                    ),
+                ));
+            }
+            std::fs::copy(&target, &to)?;
+        } else if meta.is_dir() {
+            copy_dir_all_confined(&from, &to, sandbox_canon)?;
+        } else if meta.is_file() {
             std::fs::copy(&from, &to)?;
         }
     }
+    Ok(())
+}
+
+fn sync_sandbox_artifacts(
+    sandbox: &Path,
+    ws_root: &Path,
+    cache_paths: &[PathBuf],
+) -> Result<(), RunnerError> {
+    let sandbox_canon = sandbox.canonicalize()?;
+    let ws_canon = ws_root.canonicalize()?;
+    if sandbox_canon == ws_canon {
+        return Ok(());
+    }
+
+    for rel in cache_paths {
+        if rel.is_absolute()
+            || rel.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: unsafe cache_path '{}' in worker artifact sync",
+                    rel.display()
+                ),
+            });
+        }
+
+        let src = sandbox_canon.join(rel);
+        let dst = ws_canon.join(rel);
+
+        match std::fs::symlink_metadata(&src) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(RunnerError::Io(e)),
+        }
+
+        let src_canon = src
+            .canonicalize()
+            .map_err(|_| RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: unsafe symlink '{}' in worker sandbox",
+                    src.display()
+                ),
+            })?;
+        if !src_canon.starts_with(&sandbox_canon) {
+            return Err(RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: cache_path '{}' resolves outside worker sandbox",
+                    rel.display()
+                ),
+            });
+        }
+
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if src_canon.is_dir() {
+            copy_dir_all_confined(&src_canon, &dst, &sandbox_canon).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    RunnerError::ExecutionFailed {
+                        code: Some(126),
+                        stderr: e.to_string(),
+                    }
+                } else {
+                    RunnerError::Io(e)
+                }
+            })?;
+        } else if src_canon.is_file() {
+            std::fs::copy(&src_canon, &dst)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -120,19 +220,8 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 (&self.workspace_root, &report.worker_sandbox)
             {
                 let sandbox = Path::new(sandbox_str);
-                if sandbox != ws_root.as_path() && sandbox.exists() {
-                    for rel in &task.cache_paths {
-                        let src = sandbox.join(rel);
-                        let dst = ws_root.join(rel);
-                        if let Some(parent) = dst.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        if src.is_dir() {
-                            let _ = copy_dir_all(&src, &dst);
-                        } else if src.is_file() {
-                            let _ = std::fs::copy(&src, &dst);
-                        }
-                    }
+                if sandbox.exists() {
+                    sync_sandbox_artifacts(sandbox, ws_root, &task.cache_paths)?;
                 }
             }
         }
