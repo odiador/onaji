@@ -97,7 +97,8 @@ async fn test_web_dashboard_server_endpoints() {
     let res_str4 = String::from_utf8_lossy(&response4);
 
     assert!(res_str4.contains(r#""task_id":"compile_android""#));
-    assert!(res_str4.contains(r#""root_cause":"openapi_spec""#));
+    assert!(res_str4.contains(r#""status":"no_trace""#));
+    assert!(!res_str4.contains(r#""root_cause":"openapi_spec""#));
 
     // 5. Test GET /api/events (Live Persistent SSE Stream)
     let mut stream5 = TcpStream::connect(("127.0.0.1", port))
@@ -196,13 +197,30 @@ async fn test_web_dashboard_real_worker_health_and_cache_hit_ratio() {
     let port = 19891;
     let temp_dir = tempfile::tempdir().unwrap();
 
-    // 1. Guardar cache con 3 hits y 1 miss -> hit_ratio = 0.75
+    // 1. Guardar cache con 3 hits y 1 miss -> hit_ratio = 0.75, y traza real
     let mut cache = onaji_core::cache::ExecutionCache::new();
     cache.record_hit();
     cache.record_hit();
     cache.record_hit();
     cache.record_miss();
     cache.save(temp_dir.path()).unwrap();
+
+    let traces_dir = temp_dir.path().join(".onaji").join("traces");
+    std::fs::create_dir_all(&traces_dir).unwrap();
+    let mut span = onaji_core::telemetry::SpanRecord::new(
+        "s1",
+        None,
+        "compile_android",
+        onaji_core::telemetry::SpanKind::TaskExecute,
+    );
+    span.duration_ms = Some(42);
+    span.set_attr("task.id", "compile_android");
+    span.set_attr("causal.trigger", "real_spec_change");
+    std::fs::write(
+        traces_dir.join("latest.json"),
+        serde_json::to_string(&vec![span]).unwrap(),
+    )
+    .unwrap();
 
     // 2. Registrar 1 worker local (ONLINE) + 1 worker TCP en puerto cerrado (OFFLINE)
     let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -270,6 +288,17 @@ async fn test_web_dashboard_real_worker_health_and_cache_hit_ratio() {
     assert!(body3.contains("onaji_cache_hit_ratio 0.7500"));
     assert!(body3.contains("onaji_cache_hits_total 3"));
     assert!(body3.contains("onaji_cache_misses_total 1"));
+
+    // 6. Verificar GET /api/explain con traza real
+    let mut s4 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s4.write_all(b"GET /api/explain?task=compile_android HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut r4 = Vec::new();
+    s4.read_to_end(&mut r4).await.unwrap();
+    let body4 = String::from_utf8_lossy(&r4);
+    assert!(body4.contains(r#""root_cause":"real_spec_change""#));
+    assert!(body4.contains(r#""duration_ms":42"#));
 
     srv_handle.abort();
     let _ = srv_handle.await;

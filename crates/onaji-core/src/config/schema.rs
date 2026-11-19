@@ -27,6 +27,8 @@ pub struct RawWorkerConfig {
     pub address: String,
     #[serde(default, deserialize_with = "deserialize_toolchains")]
     pub toolchains: HashMap<String, String>,
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 fn deserialize_toolchains<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>

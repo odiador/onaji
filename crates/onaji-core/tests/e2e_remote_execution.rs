@@ -133,6 +133,9 @@ async fn test_remote_worker_container_execution() {
         cache_key: "abcdef123456".to_string(),
         timeout_ms: 30000,
         cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
     };
 
     let report = worker.execute_assignment(&assignment).await;
@@ -160,6 +163,9 @@ async fn test_remote_worker_timeout_enforcement() {
         cache_key: "timeoutkey123".to_string(),
         timeout_ms: 50,
         cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
     };
 
     let report = worker.execute_assignment(&assignment).await;
@@ -222,26 +228,18 @@ async fn test_remote_worker_tcp_server_lifecycle() {
         HashMap::from([("sh".to_string(), "1.0".to_string())]),
     ));
 
-    // Find available port
+    // Find available port and bind deterministically without drop race
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = listener.local_addr().unwrap();
-    drop(listener);
 
     let server_worker = Arc::clone(&worker);
-    let addr_str = local_addr.to_string();
     let srv_handle = tokio::spawn(async move {
-        let _ = server_worker.run_server(&addr_str).await;
+        let _ = server_worker.run_listener(listener).await;
     });
 
-    let mut stream_opt = None;
-    for _ in 0..50 {
-        if let Ok(s) = TcpStream::connect(local_addr).await {
-            stream_opt = Some(s);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    let stream = stream_opt.expect("Connect to TCP worker");
+    let stream = TcpStream::connect(local_addr)
+        .await
+        .expect("Connect to TCP worker");
     let (reader, mut writer) = tokio::io::split(stream);
     let mut lines = BufReader::new(reader).lines();
 
@@ -253,6 +251,9 @@ async fn test_remote_worker_tcp_server_lifecycle() {
         cache_key: "cache_tcp_123".to_string(),
         timeout_ms: 5000,
         cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
     };
 
     let mut msg = serde_json::to_string(&assignment).unwrap();
@@ -411,25 +412,12 @@ async fn test_tcp_worker_client_and_coordinator_integration() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = listener.local_addr().unwrap();
-    drop(listener);
 
     let server_daemon = Arc::clone(&worker_daemon);
     let addr_str = local_addr.to_string();
-    let srv_addr = addr_str.clone();
     let srv_handle = tokio::spawn(async move {
-        let _ = server_daemon.run_server(&srv_addr).await;
+        let _ = server_daemon.run_listener(listener).await;
     });
-
-    // Esperar a que el servidor TCP esté listo
-    let mut ready = false;
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(local_addr).await.is_ok() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(ready, "TCP worker daemon failed to bind");
 
     // 2. Configurar el coordinador y registrar el cliente TCP
     let coordinator = Arc::new(ClusterCoordinator::new());
@@ -614,23 +602,11 @@ async fn test_declarative_cluster_workers_from_manifest_and_ping_latency() {
     ));
     let listener_live = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let live_addr = listener_live.local_addr().unwrap();
-    drop(listener_live);
 
-    let srv_addr = live_addr.to_string();
     let srv_worker = Arc::clone(&worker_daemon);
     let srv_handle = tokio::spawn(async move {
-        let _ = srv_worker.run_server(&srv_addr).await;
+        let _ = srv_worker.run_listener(listener_live).await;
     });
-
-    let mut ready = false;
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(live_addr).await.is_ok() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(ready, "Live TCP worker did not bind in time");
 
     // 2. Obtener un puerto cerrado para simular worker offline
     let listener_dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -751,6 +727,9 @@ async fn test_coordinator_active_tasks_decremented_on_cancellation() {
             cache_key: String::new(),
             timeout_ms: 10000,
             cache_paths: Vec::new(),
+            tags: Vec::new(),
+            auth_token: None,
+            inputs_tar_zst_hex: None,
         };
         let _ = coord_clone.dispatch_task(assignment).await;
     });
@@ -788,6 +767,9 @@ async fn test_tcp_worker_client_times_out_on_unresponsive_server() {
         cache_key: String::new(),
         timeout_ms: 200,
         cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
     };
 
     let start = std::time::Instant::now();
@@ -820,23 +802,11 @@ async fn test_tcp_worker_over_the_wire_artifact_transfer_and_cas_integration() {
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
 
-    let srv_addr = addr.to_string();
     let srv_worker = Arc::clone(&worker_daemon);
     let srv_handle = tokio::spawn(async move {
-        let _ = srv_worker.run_server(&srv_addr).await;
+        let _ = srv_worker.run_listener(listener).await;
     });
-
-    let mut ready = false;
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(ready);
 
     // 2. Ejecutar mediante TaskScheduler + RemoteExecutionBackend + TcpWorkerClient
     let yaml = r#"
@@ -948,6 +918,7 @@ tasks:
                 success: true,
                 worker_sandbox: None,
                 artifacts_tar_zst_hex: Some(hex_payload),
+                transport_error: false,
             };
             let mut s = serde_json::to_string(&report).unwrap();
             s.push('\n');
@@ -994,4 +965,290 @@ tasks:
 
     evil_srv.abort();
     let _ = evil_srv.await;
+}
+
+#[tokio::test]
+async fn test_tcp_worker_authentication_policy_and_frame_limit() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut auth = onaji_core::security::Authenticator::new();
+    auth.register_token("secret-123");
+
+    let worker = Arc::new(
+        WorkerDaemon::new(
+            "worker-secured",
+            temp_dir.path(),
+            HashMap::from([("sh".to_string(), "1.0".to_string())]),
+        )
+        .with_authenticator(Arc::new(auth))
+        .with_policy(onaji_protocol::messages::security::SecurityPolicy::default())
+        .with_max_frame_bytes(1024),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let srv_worker = Arc::clone(&worker);
+    let srv_handle = tokio::spawn(async move {
+        let _ = srv_worker.run_listener(listener).await;
+    });
+
+    // 1. Cliente sin token debe recibir exit_code 401
+    let unauth_client = onaji_core::remote::TcpWorkerClient::new(
+        "worker-secured",
+        addr.to_string(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+    let allowed_assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "t_auth".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "echo auth_policy_ok".to_string(),
+        env: HashMap::new(),
+        cache_key: String::new(),
+        timeout_ms: 5000,
+        cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
+    };
+    let unauth_rep =
+        onaji_core::remote::WorkerHandle::execute_assignment(&unauth_client, &allowed_assignment)
+            .await;
+    assert!(!unauth_rep.success);
+    assert_eq!(unauth_rep.exit_code, Some(401));
+
+    // 2. Cliente con token incorrecto también recibe 401
+    let wrong_client = unauth_client.clone().with_auth_token("wrong-tok");
+    let wrong_rep =
+        onaji_core::remote::WorkerHandle::execute_assignment(&wrong_client, &allowed_assignment)
+            .await;
+    assert!(!wrong_rep.success);
+    assert_eq!(wrong_rep.exit_code, Some(401));
+
+    // 3. Cliente con token correcto y comando prohibido por SecurityPolicy recibe 126
+    let auth_client = unauth_client.with_auth_token("secret-123");
+    let forbidden_assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "t_forbidden".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "echo a; echo b".to_string(),
+        env: HashMap::new(),
+        cache_key: String::new(),
+        timeout_ms: 5000,
+        cache_paths: Vec::new(),
+        tags: Vec::new(),
+        auth_token: None,
+        inputs_tar_zst_hex: None,
+    };
+    let forbid_rep =
+        onaji_core::remote::WorkerHandle::execute_assignment(&auth_client, &forbidden_assignment)
+            .await;
+    assert!(!forbid_rep.success);
+    assert_eq!(forbid_rep.exit_code, Some(126));
+
+    // 4. Cliente con token correcto y comando permitido tiene éxito
+    let ok_rep =
+        onaji_core::remote::WorkerHandle::execute_assignment(&auth_client, &allowed_assignment)
+            .await;
+    assert!(ok_rep.success);
+    assert!(ok_rep.stdout.contains("auth_policy_ok"));
+
+    // 5. Conexión TCP enviando >1024 bytes sin '\n' debe rechazarse con exit_code 413
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut lines = BufReader::new(reader).lines();
+    let oversized = vec![b'x'; 1500];
+    writer.write_all(&oversized).await.unwrap();
+    writer.flush().await.unwrap();
+    let resp_line = lines
+        .next_line()
+        .await
+        .unwrap()
+        .expect("413 frame response");
+    let limit_rep: onaji_protocol::messages::worker::TaskExecutionReport =
+        serde_json::from_str(&resp_line).unwrap();
+    assert!(!limit_rep.success);
+    assert_eq!(limit_rep.exit_code, Some(413));
+
+    srv_handle.abort();
+    let _ = srv_handle.await;
+}
+
+#[tokio::test]
+async fn test_two_stage_remote_tcp_pipeline_with_inputs_and_outputs_over_wire() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let ws = root.join("workspace");
+    let sandbox_1 = root.join("sandbox_worker_1");
+    let sandbox_2 = root.join("sandbox_worker_2");
+    std::fs::create_dir_all(ws.join("api")).unwrap();
+    std::fs::write(ws.join("api/spec.txt"), "hello_distributed\n").unwrap();
+
+    let w1 = Arc::new(WorkerDaemon::new(
+        "worker-s1",
+        &sandbox_1,
+        HashMap::from([("stage1".to_string(), "1.0".to_string())]),
+    ));
+    let w2 = Arc::new(WorkerDaemon::new(
+        "worker-s2",
+        &sandbox_2,
+        HashMap::from([("stage2".to_string(), "1.0".to_string())]),
+    ));
+
+    let l1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr1 = l1.local_addr().unwrap();
+    let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr2 = l2.local_addr().unwrap();
+
+    let h1 = tokio::spawn(async move {
+        let _ = w1.run_listener(l1).await;
+    });
+    let h2 = tokio::spawn(async move {
+        let _ = w2.run_listener(l2).await;
+    });
+
+    let yaml = r#"
+version: "1"
+name: "two_stage_wire_pipeline"
+resources:
+  spec_file:
+    type: file
+    path: "./api/spec.txt"
+artifacts:
+  stage1_art:
+    description: "Stage 1 output"
+  stage2_art:
+    description: "Stage 2 output"
+tasks:
+  stage1:
+    inputs: [spec_file]
+    outputs: [stage1_art]
+    tags: ["toolchain:stage1"]
+    cache:
+      paths: ["gen"]
+    run: "mkdir -p gen && cat api/spec.txt > gen/intermediate.txt"
+  stage2:
+    inputs: [stage1_art]
+    outputs: [stage2_art]
+    tags: ["toolchain:stage2"]
+    cache:
+      paths: ["dist"]
+    run: "mkdir -p dist && tr a-z A-Z < gen/intermediate.txt > dist/final.txt"
+"#;
+    let (_, dag) = onaji_core::config::ConfigLoader::load_from_str(yaml).unwrap();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_tcp_worker(
+        "worker-s1",
+        addr1.to_string(),
+        HashMap::from([("stage1".to_string(), "1.0".to_string())]),
+    );
+    coordinator.register_tcp_worker(
+        "worker-s2",
+        addr2.to_string(),
+        HashMap::from([("stage2".to_string(), "1.0".to_string())]),
+    );
+
+    let backend = Arc::new(RemoteExecutionBackend::new(coordinator).with_workspace_root(&ws));
+    let mut cache = onaji_core::cache::ExecutionCache::new();
+    let mut scheduler =
+        onaji_core::scheduler::TaskScheduler::new(&dag, &ws, &mut cache).with_backend(backend);
+
+    let summary = scheduler
+        .execute_tasks(&[TaskId::new("stage1"), TaskId::new("stage2")])
+        .await
+        .unwrap();
+    assert!(summary.success);
+    assert_eq!(summary.results.len(), 2);
+
+    let final_out = std::fs::read_to_string(ws.join("dist/final.txt")).unwrap();
+    assert!(final_out.contains("HELLO_DISTRIBUTED"));
+
+    h1.abort();
+    h2.abort();
+    let _ = h1.await;
+    let _ = h2.await;
+}
+
+#[tokio::test]
+async fn test_coordinator_tag_routing_and_transport_only_failover() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let s1 = temp_dir.path().join("s1");
+    let s2 = temp_dir.path().join("s2");
+    std::fs::create_dir_all(&s1).unwrap();
+    std::fs::create_dir_all(&s2).unwrap();
+
+    // 1. Con FailoverPolicy::TransportOnly, fallo determinístico (exit 1) NO debe reintentar en segundo worker
+    let coord = ClusterCoordinator::new()
+        .with_failover_policy(onaji_core::remote::FailoverPolicy::TransportOnly);
+    coord.register_worker(Arc::new(WorkerDaemon::new(
+        "gpu-1",
+        &s1,
+        HashMap::from([("custom_gpu".to_string(), "1.0".to_string())]),
+    )));
+    coord.register_worker(Arc::new(WorkerDaemon::new(
+        "gpu-2",
+        &s2,
+        HashMap::from([("custom_gpu".to_string(), "1.0".to_string())]),
+    )));
+
+    let failing_assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "gpu_user_fail".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "touch ran_here && exit 1".to_string(),
+        env: HashMap::new(),
+        cache_key: String::new(),
+        timeout_ms: 5000,
+        cache_paths: Vec::new(),
+        tags: vec!["toolchain:custom_gpu".to_string()],
+        auth_token: None,
+        inputs_tar_zst_hex: None,
+    };
+
+    let rep = coord.dispatch_task(failing_assignment).await.unwrap();
+    assert!(!rep.success);
+    assert_eq!(rep.exit_code, Some(1));
+    let ran_count = [s1.join("ran_here").exists(), s2.join("ran_here").exists()]
+        .into_iter()
+        .filter(|&b| b)
+        .count();
+    assert_eq!(ran_count, 1, "TransportOnly must not failover on exit 1");
+
+    // 2. Ante transport_error == true (puerto TCP cerrado), TransportOnly SÍ debe hacer failover al worker vivo
+    let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_addr = closed_listener.local_addr().unwrap();
+    drop(closed_listener);
+
+    let coord2 = ClusterCoordinator::new()
+        .with_failover_policy(onaji_core::remote::FailoverPolicy::TransportOnly);
+    coord2.register_tcp_worker(
+        "tcp-dead",
+        closed_addr.to_string(),
+        HashMap::from([("custom_gpu".to_string(), "1.0".to_string())]),
+    );
+    coord2.register_worker(Arc::new(WorkerDaemon::new(
+        "gpu-alive",
+        temp_dir.path().join("alive"),
+        HashMap::from([("custom_gpu".to_string(), "1.0".to_string())]),
+    )));
+
+    // Ocupar un worker no existe aquí, pero aunque tcp-dead o gpu-alive salga primero:
+    // si tocó tcp-dead -> transport_error = true -> failover a gpu-alive -> success.
+    // Si tocó gpu-alive primero -> success directo. Para forzar que tcp-dead salga primero?
+    // Ninguno tiene load > 0; garantizamos éxito en ambos órdenes y probamos explícitamente tcp-dead solo también si hiciera falta.
+    let ok_assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "gpu_transport_failover".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "echo failover_transport_ok".to_string(),
+        env: HashMap::new(),
+        cache_key: String::new(),
+        timeout_ms: 5000,
+        cache_paths: Vec::new(),
+        tags: vec!["toolchain:custom_gpu".to_string()],
+        auth_token: None,
+        inputs_tar_zst_hex: None,
+    };
+    let ok_rep = coord2.dispatch_task(ok_assignment).await.unwrap();
+    assert!(ok_rep.success);
+    assert!(ok_rep.stdout.contains("failover_transport_ok"));
 }

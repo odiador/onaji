@@ -298,6 +298,45 @@ impl<'a> TaskScheduler<'a> {
                         ));
                     }
 
+                    let mut input_paths: Vec<PathBuf> = Vec::new();
+                    for inp in &task.inputs {
+                        match inp {
+                            InputNode::Resource(r_id) => {
+                                if let Some(res) = self.dag.get_resource(r_id) {
+                                    if let ResourceType::File { path, .. } = &res.resource_type {
+                                        if !input_paths.contains(path) {
+                                            input_paths.push(path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            InputNode::Artifact(a_id) => {
+                                if let Some(art_idx) = self.dag.artifact_indices.get(a_id) {
+                                    for pred in self
+                                        .dag
+                                        .graph
+                                        .neighbors_directed(*art_idx, petgraph::Direction::Incoming)
+                                    {
+                                        if let Some(crate::graph::GraphNode::Task(prod_task)) =
+                                            self.dag.get_node(pred)
+                                        {
+                                            for p in &prod_task.cache_paths {
+                                                if !input_paths.contains(p) {
+                                                    input_paths.push(p.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let task_env = match &task.action {
+                        crate::domain::Action::Command { env, .. } => env.clone(),
+                        _ => HashMap::new(),
+                    };
+
                     let root = self.workspace_root.clone();
                     let key_opt = Some(cache_key);
                     let backend_cloned = self.backend.clone();
@@ -310,8 +349,13 @@ impl<'a> TaskScheduler<'a> {
                             attempts += 1;
                             let res = match &backend_cloned {
                                 Some(b) => {
-                                    b.execute_task(&task, key_opt.clone(), &HashMap::new())
-                                        .await
+                                    b.execute_task_with_inputs(
+                                        &task,
+                                        key_opt.clone(),
+                                        &task_env,
+                                        &input_paths,
+                                    )
+                                    .await
                                 }
                                 None => {
                                     ProcessExecutor::execute(&task, &root, key_opt.clone()).await

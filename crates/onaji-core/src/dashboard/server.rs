@@ -443,16 +443,18 @@ impl DashboardServer {
                                     r#"{"status":"empty","message":"No trace recorded"}"#
                                         .to_string()
                                 }
-                            } else {
-                                let default_task =
-                                    task_param.unwrap_or_else(|| "compile_android".to_string());
+                            } else if let Some(target_task) = &task_param {
                                 serde_json::json!({
-                                    "task_id": default_task,
-                                    "root_cause": "openapi_spec",
-                                    "trigger_type": "content_hash_change",
-                                    "cache_lookup": "miss",
-                                    "assigned_worker": "worker-android-02",
-                                    "duration_ms": 8240
+                                    "task_id": target_task,
+                                    "status": "no_trace",
+                                    "message": "No execution trace recorded yet (run `onaji run --trace`)",
+                                    "root_cause": serde_json::Value::Null
+                                })
+                                .to_string()
+                            } else {
+                                serde_json::json!({
+                                    "status": "no_trace",
+                                    "message": "No execution trace recorded yet (run `onaji run --trace`)"
                                 })
                                 .to_string()
                             };

@@ -20,6 +20,12 @@ pub struct TaskAssignment {
     pub timeout_ms: u64,
     #[serde(default)]
     pub cache_paths: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs_tar_zst_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,4 +40,6 @@ pub struct TaskExecutionReport {
     pub worker_sandbox: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts_tar_zst_hex: Option<String>,
+    #[serde(default)]
+    pub transport_error: bool,
 }

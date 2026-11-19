@@ -436,6 +436,18 @@ pub enum WorkerCommands {
 
         #[arg(long, help = "Custom worker identifier name")]
         id: Option<String>,
+
+        #[arg(
+            long,
+            help = "Require shared authentication token from clients (or set ONAJI_WORKER_TOKEN)"
+        )]
+        token: Option<String>,
+
+        #[arg(
+            long,
+            help = "Enforce strict SecurityPolicy command allowlist on this worker"
+        )]
+        strict_policy: bool,
     },
 
     /// Show status of the local worker daemon

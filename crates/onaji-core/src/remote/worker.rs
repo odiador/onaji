@@ -7,6 +7,7 @@ use std::time::Instant;
 use tokio::process::Command;
 
 pub const MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_TCP_JSON_LINE_BYTES: usize = 68 * 1024 * 1024;
 
 #[async_trait]
 pub trait WorkerHandle: Send + Sync {
@@ -67,20 +68,20 @@ fn append_confined_dir_to_tar<W: std::io::Write>(
     Ok(())
 }
 
-fn pack_sandbox_artifacts_safely(
-    sandbox: &Path,
-    cache_paths: &[String],
+pub(crate) fn pack_paths_to_tar_zst_safely(
+    root: &Path,
+    rel_paths: &[String],
 ) -> Result<Option<Vec<u8>>, String> {
-    if cache_paths.is_empty() {
+    if rel_paths.is_empty() {
         return Ok(None);
     }
 
-    let sandbox_canon = sandbox
+    let sandbox_canon = root
         .canonicalize()
-        .map_err(|e| format!("Failed canonicalizing worker sandbox: {}", e))?;
+        .map_err(|e| format!("Failed canonicalizing root '{}': {}", root.display(), e))?;
 
     let mut validated: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for rel_str in cache_paths {
+    for rel_str in rel_paths {
         let rel_path = Path::new(rel_str);
         if rel_path.is_absolute()
             || rel_path.components().any(|c| {
@@ -165,9 +166,126 @@ fn pack_sandbox_artifacts_safely(
     Ok(Some(buf))
 }
 
+pub(crate) fn unpack_tar_zst_safely(dest_root: &Path, archive_bytes: &[u8]) -> Result<(), String> {
+    if archive_bytes.len() > MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES {
+        return Err(format!(
+            "Security violation: remote archive exceeds limit ({} bytes)",
+            MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES
+        ));
+    }
+
+    let dest_canon = dest_root.canonicalize().map_err(|e| {
+        format!(
+            "Failed canonicalizing destination '{}': {}",
+            dest_root.display(),
+            e
+        )
+    })?;
+    let decoder = zstd::Decoder::new(std::io::Cursor::new(archive_bytes))
+        .map_err(|e| format!("Invalid zstd archive: {}", e))?;
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Invalid tar entries: {}", e))?;
+
+    for entry_res in entries {
+        let mut entry = entry_res.map_err(|e| format!("Invalid tar entry: {}", e))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("Invalid tar entry path: {}", e))?
+            .to_path_buf();
+
+        if path.is_absolute()
+            || path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!(
+                "Security violation: unsafe archive path '{}' from remote transfer",
+                path.display()
+            ));
+        }
+
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(format!(
+                "Security violation: link entry '{}' rejected from remote archive",
+                path.display()
+            ));
+        }
+
+        if !dest_canon.join(&path).starts_with(&dest_canon) {
+            return Err(format!(
+                "Security violation: archive path '{}' escapes destination root",
+                path.display()
+            ));
+        }
+
+        entry
+            .unpack_in(&dest_canon)
+            .map_err(|e| format!("Failed unpacking '{}': {}", path.display(), e))?;
+    }
+
+    Ok(())
+}
+
+async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    use tokio::io::AsyncBufReadExt;
+    let mut buf = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            let take = pos + 1;
+            if buf.len().saturating_add(take) > max_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Frame exceeded maximum allowed limit of {} bytes",
+                        max_bytes
+                    ),
+                ));
+            }
+            buf.extend_from_slice(&available[..take]);
+            reader.consume(take);
+            break;
+        } else {
+            let take = available.len();
+            if buf.len().saturating_add(take) > max_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Frame exceeded maximum allowed limit of {} bytes",
+                        max_bytes
+                    ),
+                ));
+            }
+            buf.extend_from_slice(available);
+            reader.consume(take);
+        }
+    }
+    String::from_utf8(buf)
+        .map(Some)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 pub struct WorkerDaemon {
     pub registration: WorkerRegistration,
     pub sandbox_root: PathBuf,
+    pub authenticator: Option<Arc<crate::security::Authenticator>>,
+    pub policy_checker: Option<crate::security::PolicyChecker>,
+    pub max_frame_bytes: usize,
 }
 
 #[async_trait]
@@ -198,12 +316,87 @@ impl WorkerDaemon {
         Self {
             registration,
             sandbox_root: sandbox_root.as_ref().to_path_buf(),
+            authenticator: None,
+            policy_checker: None,
+            max_frame_bytes: MAX_TCP_JSON_LINE_BYTES,
         }
+    }
+
+    pub fn with_authenticator(mut self, auth: Arc<crate::security::Authenticator>) -> Self {
+        self.authenticator = Some(auth);
+        self
+    }
+
+    pub fn with_policy(
+        mut self,
+        policy: onaji_protocol::messages::security::SecurityPolicy,
+    ) -> Self {
+        self.policy_checker = Some(crate::security::PolicyChecker::new(policy));
+        self
+    }
+
+    pub fn with_max_frame_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_frame_bytes = max_bytes;
+        self
     }
 
     pub async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
         let start = Instant::now();
         std::fs::create_dir_all(&self.sandbox_root).ok();
+
+        if let Some(checker) = &self.policy_checker {
+            if let Err(violation) = checker.validate_command(&assignment.action_cmd) {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(126),
+                    stdout: String::new(),
+                    stderr: format!(
+                        "Security policy violation ({:?}): {}",
+                        violation.violation_type, violation.details
+                    ),
+                    duration_ms,
+                    success: false,
+                    worker_sandbox: None,
+                    artifacts_tar_zst_hex: None,
+                    transport_error: false,
+                };
+            }
+        }
+
+        if let Some(inputs_hex) = &assignment.inputs_tar_zst_hex {
+            let bytes = match hex::decode(inputs_hex) {
+                Ok(b) => b,
+                Err(err) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(126),
+                        stdout: String::new(),
+                        stderr: format!("Input unpack rejected: invalid hex payload ({})", err),
+                        duration_ms,
+                        success: false,
+                        worker_sandbox: None,
+                        artifacts_tar_zst_hex: None,
+                        transport_error: false,
+                    };
+                }
+            };
+            if let Err(err) = unpack_tar_zst_safely(&self.sandbox_root, &bytes) {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(126),
+                    stdout: String::new(),
+                    stderr: format!("Input unpack rejected: {}", err),
+                    duration_ms,
+                    success: false,
+                    worker_sandbox: None,
+                    artifacts_tar_zst_hex: None,
+                    transport_error: false,
+                };
+            }
+        }
 
         let mut cmd = if let Some(image) = assignment.env.get("ONAJI_CONTAINER_IMAGE") {
             let engine =
@@ -267,6 +460,7 @@ impl WorkerDaemon {
                         success: false,
                         worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                         artifacts_tar_zst_hex: None,
+                        transport_error: false,
                     };
                 }
             }
@@ -291,6 +485,7 @@ impl WorkerDaemon {
                     success,
                     worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                     artifacts_tar_zst_hex: None,
+                    transport_error: false,
                 }
             }
             Err(err) => {
@@ -304,6 +499,7 @@ impl WorkerDaemon {
                     success: false,
                     worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
                     artifacts_tar_zst_hex: None,
+                    transport_error: false,
                 }
             }
         }
@@ -311,10 +507,15 @@ impl WorkerDaemon {
 
     /// Inicia un servidor TCP para recibir y ejecutar asignaciones de tareas de forma distribuida
     pub async fn run_server(self: Arc<Self>, bind_addr: &str) -> std::io::Result<()> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::TcpListener;
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        self.run_listener(listener).await
+    }
 
-        let listener = TcpListener::bind(bind_addr).await?;
+    pub async fn run_listener(
+        self: Arc<Self>,
+        listener: tokio::net::TcpListener,
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncWriteExt, BufReader};
 
         loop {
             let (stream, _) = listener.accept().await?;
@@ -322,10 +523,35 @@ impl WorkerDaemon {
 
             tokio::spawn(async move {
                 let (reader, mut writer) = tokio::io::split(stream);
-                let mut lines = BufReader::new(reader).lines();
+                let mut buf_reader = BufReader::new(reader);
 
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let line = line.trim();
+                loop {
+                    let raw_line =
+                        match read_line_limited(&mut buf_reader, worker.max_frame_bytes).await {
+                            Ok(Some(l)) => l,
+                            Ok(None) => break,
+                            Err(err) => {
+                                let report = TaskExecutionReport {
+                                    task_id: "unknown".to_string(),
+                                    exit_code: Some(413),
+                                    stdout: String::new(),
+                                    stderr: err.to_string(),
+                                    duration_ms: 0,
+                                    success: false,
+                                    worker_sandbox: None,
+                                    artifacts_tar_zst_hex: None,
+                                    transport_error: true,
+                                };
+                                if let Ok(mut resp_str) = serde_json::to_string(&report) {
+                                    resp_str.push('\n');
+                                    let _ = writer.write_all(resp_str.as_bytes()).await;
+                                    let _ = writer.flush().await;
+                                }
+                                break;
+                            }
+                        };
+
+                    let line = raw_line.trim();
                     if line.is_empty() {
                         continue;
                     }
@@ -342,6 +568,7 @@ impl WorkerDaemon {
                                 success: false,
                                 worker_sandbox: None,
                                 artifacts_tar_zst_hex: None,
+                                transport_error: false,
                             };
                             if let Ok(mut resp_str) = serde_json::to_string(&report) {
                                 resp_str.push('\n');
@@ -352,9 +579,44 @@ impl WorkerDaemon {
                         }
                     };
 
+                    if let Some(auth) = &worker.authenticator {
+                        let authorized = assignment
+                            .auth_token
+                            .as_deref()
+                            .map(|tok| {
+                                auth.authenticate(
+                                    &onaji_protocol::messages::security::AuthCredentials::Token(
+                                        tok.to_string(),
+                                    ),
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !authorized {
+                            let report = TaskExecutionReport {
+                                task_id: assignment.task_id.clone(),
+                                exit_code: Some(401),
+                                stdout: String::new(),
+                                stderr:
+                                    "Unauthorized: invalid or missing worker authentication token"
+                                        .to_string(),
+                                duration_ms: 0,
+                                success: false,
+                                worker_sandbox: None,
+                                artifacts_tar_zst_hex: None,
+                                transport_error: false,
+                            };
+                            if let Ok(mut resp_str) = serde_json::to_string(&report) {
+                                resp_str.push('\n');
+                                let _ = writer.write_all(resp_str.as_bytes()).await;
+                                let _ = writer.flush().await;
+                            }
+                            continue;
+                        }
+                    }
+
                     let mut report = worker.execute_assignment(&assignment).await;
                     if report.success && !assignment.cache_paths.is_empty() {
-                        match pack_sandbox_artifacts_safely(
+                        match pack_paths_to_tar_zst_safely(
                             &worker.sandbox_root,
                             &assignment.cache_paths,
                         ) {
@@ -390,6 +652,7 @@ impl WorkerDaemon {
 pub struct TcpWorkerClient {
     pub registration: WorkerRegistration,
     pub address: String,
+    pub auth_token: Option<String>,
 }
 
 impl TcpWorkerClient {
@@ -408,6 +671,7 @@ impl TcpWorkerClient {
         Self {
             registration,
             address: address.into(),
+            auth_token: None,
         }
     }
 
@@ -415,7 +679,13 @@ impl TcpWorkerClient {
         Self {
             registration,
             address: address.into(),
+            auth_token: None,
         }
+    }
+
+    pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
     }
 
     pub async fn ping_latency(&self, timeout: std::time::Duration) -> Option<u64> {
@@ -445,7 +715,7 @@ impl WorkerHandle for TcpWorkerClient {
     }
 
     async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncWriteExt, BufReader};
         use tokio::net::TcpStream;
 
         let start = Instant::now();
@@ -472,6 +742,7 @@ impl WorkerHandle for TcpWorkerClient {
                         success: false,
                         worker_sandbox: None,
                         artifacts_tar_zst_hex: None,
+                        transport_error: true,
                     };
                 }
                 Err(_) => {
@@ -489,11 +760,17 @@ impl WorkerHandle for TcpWorkerClient {
                         success: false,
                         worker_sandbox: None,
                         artifacts_tar_zst_hex: None,
+                        transport_error: true,
                     };
                 }
             };
 
-        let mut req_str = match serde_json::to_string(assignment) {
+        let mut outbound = assignment.clone();
+        if outbound.auth_token.is_none() {
+            outbound.auth_token = self.auth_token.clone();
+        }
+
+        let mut req_str = match serde_json::to_string(&outbound) {
             Ok(s) => s,
             Err(err) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
@@ -506,6 +783,7 @@ impl WorkerHandle for TcpWorkerClient {
                     success: false,
                     worker_sandbox: None,
                     artifacts_tar_zst_hex: None,
+                    transport_error: true,
                 };
             }
         };
@@ -519,7 +797,7 @@ impl WorkerHandle for TcpWorkerClient {
 
         let io_result = tokio::time::timeout(io_timeout, async {
             let (reader, mut writer) = tokio::io::split(stream);
-            let mut lines = BufReader::new(reader).lines();
+            let mut buf_reader = BufReader::new(reader);
 
             if let Err(err) = writer.write_all(req_str.as_bytes()).await {
                 let duration_ms = start.elapsed().as_millis() as u64;
@@ -532,12 +810,13 @@ impl WorkerHandle for TcpWorkerClient {
                     success: false,
                     worker_sandbox: None,
                     artifacts_tar_zst_hex: None,
+                    transport_error: true,
                 };
             }
             let _ = writer.flush().await;
 
-            match lines.next_line().await {
-                Ok(Some(line)) => match serde_json::from_str::<TaskExecutionReport>(&line) {
+            match read_line_limited(&mut buf_reader, MAX_TCP_JSON_LINE_BYTES).await {
+                Ok(Some(line)) => match serde_json::from_str::<TaskExecutionReport>(line.trim()) {
                     Ok(report) => report,
                     Err(err) => {
                         let duration_ms = start.elapsed().as_millis() as u64;
@@ -550,6 +829,7 @@ impl WorkerHandle for TcpWorkerClient {
                             success: false,
                             worker_sandbox: None,
                             artifacts_tar_zst_hex: None,
+                            transport_error: true,
                         }
                     }
                 },
@@ -565,6 +845,7 @@ impl WorkerHandle for TcpWorkerClient {
                         success: false,
                         worker_sandbox: None,
                         artifacts_tar_zst_hex: None,
+                        transport_error: true,
                     }
                 }
                 Err(err) => {
@@ -578,6 +859,7 @@ impl WorkerHandle for TcpWorkerClient {
                         success: false,
                         worker_sandbox: None,
                         artifacts_tar_zst_hex: None,
+                        transport_error: true,
                     }
                 }
             }
@@ -601,6 +883,7 @@ impl WorkerHandle for TcpWorkerClient {
                     success: false,
                     worker_sandbox: None,
                     artifacts_tar_zst_hex: None,
+                    transport_error: true,
                 }
             }
         }

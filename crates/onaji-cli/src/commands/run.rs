@@ -18,8 +18,23 @@ fn build_remote_backend(
         return None;
     }
 
+    let env_token = std::env::var("ONAJI_WORKER_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     let coordinator = std::sync::Arc::new(onaji_core::remote::ClusterCoordinator::new());
-    let manifest_count = coordinator.register_manifest_workers(manifest);
+    let mut manifest_count = 0usize;
+    if let Some(cluster) = &manifest.cluster {
+        for w in &cluster.workers {
+            coordinator.register_tcp_worker_with_token(
+                &w.id,
+                &w.address,
+                w.toolchains.clone(),
+                w.token.clone().or_else(|| env_token.clone()),
+            );
+            manifest_count += 1;
+        }
+    }
     if verbose_text && manifest_count > 0 {
         println!(
             "⚡ [remote] Registered {} cluster worker(s) from manifest.",
@@ -29,7 +44,7 @@ fn build_remote_backend(
 
     for (idx, addr) in workers.iter().enumerate() {
         let id = format!("remote-worker-{}", idx + 1);
-        coordinator.register_tcp_worker(
+        coordinator.register_tcp_worker_with_token(
             &id,
             addr,
             std::collections::HashMap::from([
@@ -37,6 +52,7 @@ fn build_remote_backend(
                 ("sh".to_string(), "installed".to_string()),
                 ("android_sdk".to_string(), "installed".to_string()),
             ]),
+            env_token.clone(),
         );
         if verbose_text {
             println!(

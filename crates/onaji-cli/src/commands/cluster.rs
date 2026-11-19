@@ -6,7 +6,12 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
     let workspace_root = resolve_workspace_root(config_path);
 
     match cmd {
-        WorkerCommands::Start { listen, id } => {
+        WorkerCommands::Start {
+            listen,
+            id,
+            token,
+            strict_policy,
+        } => {
             let worker_id = id.unwrap_or_else(|| {
                 format!("worker-{}-{}", std::env::consts::OS, std::process::id())
             });
@@ -15,11 +20,26 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
             toolchains.insert("rust".to_string(), "installed".to_string());
             toolchains.insert("sh".to_string(), "installed".to_string());
 
-            let worker = std::sync::Arc::new(onaji_core::remote::WorkerDaemon::new(
-                &worker_id,
-                &sandbox_dir,
-                toolchains,
-            ));
+            let effective_token = token.or_else(|| {
+                std::env::var("ONAJI_WORKER_TOKEN")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
+
+            let mut worker_daemon =
+                onaji_core::remote::WorkerDaemon::new(&worker_id, &sandbox_dir, toolchains);
+            let auth_enabled = effective_token.is_some();
+            if let Some(tok) = effective_token {
+                let mut auth = onaji_core::security::Authenticator::new();
+                auth.register_token(tok);
+                worker_daemon = worker_daemon.with_authenticator(std::sync::Arc::new(auth));
+            }
+            if strict_policy {
+                worker_daemon = worker_daemon
+                    .with_policy(onaji_protocol::messages::security::SecurityPolicy::default());
+            }
+
+            let worker = std::sync::Arc::new(worker_daemon);
             println!("=== Onaji Remote Worker Daemon ===");
             println!("Worker ID:   {}", worker.registration.worker_id);
             println!(
@@ -28,6 +48,22 @@ pub async fn handle_worker(config_path: &Path, cmd: WorkerCommands) {
             );
             println!("Listening:   {}", listen);
             println!("Sandbox Dir: {}", sandbox_dir.display());
+            println!(
+                "Auth:        {}",
+                if auth_enabled {
+                    "ENFORCED (shared token required)"
+                } else {
+                    "Open (no token configured)"
+                }
+            );
+            println!(
+                "Policy:      {}",
+                if strict_policy {
+                    "STRICT (command allowlist enforced)"
+                } else {
+                    "Standard sandbox"
+                }
+            );
             println!("Status:      READY (Accepting task assignments)\n");
 
             if let Err(err) = worker.run_server(&listen).await {

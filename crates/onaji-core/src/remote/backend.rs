@@ -14,6 +14,16 @@ pub trait ExecutionBackend: Send + Sync {
         cache_key: Option<CacheKey>,
         env: &HashMap<String, String>,
     ) -> Result<TaskExecutionResult, RunnerError>;
+
+    async fn execute_task_with_inputs(
+        &self,
+        task: &Task,
+        cache_key: Option<CacheKey>,
+        env: &HashMap<String, String>,
+        _input_paths: &[PathBuf],
+    ) -> Result<TaskExecutionResult, RunnerError> {
+        self.execute_task(task, cache_key, env).await
+    }
 }
 
 pub struct LocalExecutionBackend<'a> {
@@ -154,67 +164,12 @@ fn sync_sandbox_artifacts(
 }
 
 fn unpack_remote_artifacts_safely(ws_root: &Path, archive_bytes: &[u8]) -> Result<(), RunnerError> {
-    if archive_bytes.len() > super::worker::MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES {
-        return Err(RunnerError::ExecutionFailed {
+    super::worker::unpack_tar_zst_safely(ws_root, archive_bytes).map_err(|msg| {
+        RunnerError::ExecutionFailed {
             code: Some(126),
-            stderr: format!(
-                "Security violation: remote artifact archive exceeds limit ({} bytes)",
-                super::worker::MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES
-            ),
-        });
-    }
-
-    let ws_canon = ws_root.canonicalize()?;
-    let decoder = zstd::Decoder::new(std::io::Cursor::new(archive_bytes))?;
-    let mut archive = tar::Archive::new(decoder);
-    let entries = archive.entries()?;
-
-    for entry_res in entries {
-        let mut entry = entry_res?;
-        let path = entry.path()?.to_path_buf();
-
-        if path.is_absolute()
-            || path.components().any(|c| {
-                matches!(
-                    c,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )
-            })
-        {
-            return Err(RunnerError::ExecutionFailed {
-                code: Some(126),
-                stderr: format!(
-                    "Security violation: unsafe archive path '{}' from remote worker",
-                    path.display()
-                ),
-            });
+            stderr: msg,
         }
-
-        let entry_type = entry.header().entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            return Err(RunnerError::ExecutionFailed {
-                code: Some(126),
-                stderr: format!(
-                    "Security violation: link entry '{}' rejected from remote worker archive",
-                    path.display()
-                ),
-            });
-        }
-
-        if !ws_canon.join(&path).starts_with(&ws_canon) {
-            return Err(RunnerError::ExecutionFailed {
-                code: Some(126),
-                stderr: format!(
-                    "Security violation: archive path '{}' escapes workspace root",
-                    path.display()
-                ),
-            });
-        }
-
-        entry.unpack_in(&ws_canon)?;
-    }
-
-    Ok(())
+    })
 }
 
 pub struct RemoteExecutionBackend {
@@ -244,6 +199,17 @@ impl ExecutionBackend for RemoteExecutionBackend {
         cache_key: Option<CacheKey>,
         env: &HashMap<String, String>,
     ) -> Result<TaskExecutionResult, RunnerError> {
+        self.execute_task_with_inputs(task, cache_key, env, &[])
+            .await
+    }
+
+    async fn execute_task_with_inputs(
+        &self,
+        task: &Task,
+        cache_key: Option<CacheKey>,
+        env: &HashMap<String, String>,
+        input_paths: &[PathBuf],
+    ) -> Result<TaskExecutionResult, RunnerError> {
         let cmd = match &task.action {
             Action::Command { run, .. } => run.clone(),
             Action::Builtin { adapter, .. } => format!("builtin:{}", adapter),
@@ -253,6 +219,25 @@ impl ExecutionBackend for RemoteExecutionBackend {
             .timeout_secs
             .map(|s| s.saturating_mul(1000))
             .unwrap_or(30000);
+
+        let inputs_tar_zst_hex = if !input_paths.is_empty() {
+            if let Some(ws_root) = &self.workspace_root {
+                let input_strs: Vec<String> = input_paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                let packed = super::worker::pack_paths_to_tar_zst_safely(ws_root, &input_strs)
+                    .map_err(|msg| RunnerError::ExecutionFailed {
+                        code: Some(126),
+                        stderr: msg,
+                    })?;
+                packed.map(hex::encode)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let assignment = onaji_protocol::messages::worker::TaskAssignment {
             task_id: task.id.to_string(),
@@ -269,6 +254,9 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect(),
+            tags: task.tags.clone(),
+            auth_token: None,
+            inputs_tar_zst_hex,
         };
 
         let report = self.coordinator.dispatch_task(assignment).await?;
