@@ -200,10 +200,15 @@ impl DashboardServer {
                                     ("Unknown".to_string(), 0, 0)
                                 };
 
-                            let workers_online = coord_ref
-                                .as_ref()
-                                .map(|c| c.list_workers().len())
-                                .unwrap_or(0);
+                            let (workers_online, workers_total) = if let Some(coord) = &coord_ref {
+                                let statuses = coord
+                                    .inspect_workers_health(std::time::Duration::from_millis(300))
+                                    .await;
+                                let online = statuses.iter().filter(|w| w.online).count();
+                                (online, statuses.len())
+                            } else {
+                                (0, 0)
+                            };
 
                             let body = serde_json::json!({
                                 "status": "ok",
@@ -215,7 +220,10 @@ impl DashboardServer {
                                 "cas_artifacts_count": cas_count,
                                 "cas_size_bytes": cas_size_bytes,
                                 "workers_online": workers_online,
-                                "cache_hit_ratio": if cache.is_empty() { 0.0 } else { 1.0 },
+                                "workers_total": workers_total,
+                                "cache_hits": cache.hits(),
+                                "cache_misses": cache.misses(),
+                                "cache_hit_ratio": cache.hit_ratio(),
                             })
                             .to_string();
 
@@ -224,21 +232,22 @@ impl DashboardServer {
                             let workers_list: Vec<serde_json::Value> =
                                 if let Some(coord) = &coord_ref {
                                     coord
-                                        .list_workers()
-                                        .into_iter()
-                                        .map(|w| {
-                                            let load = coord.worker_load(&w.worker_id);
-                                            serde_json::json!({
-                                                "worker_id": w.worker_id,
-                                                "os": w.os,
-                                                "arch": w.arch,
-                                                "toolchains": w.toolchains,
-                                                "max_parallel_tasks": w.max_parallel_tasks,
-                                                "active_tasks": load,
-                                                "status": "ONLINE"
-                                            })
+                                    .inspect_workers_health(std::time::Duration::from_millis(300))
+                                    .await
+                                    .into_iter()
+                                    .map(|w| {
+                                        serde_json::json!({
+                                            "worker_id": w.registration.worker_id,
+                                            "os": w.registration.os,
+                                            "arch": w.registration.arch,
+                                            "toolchains": w.registration.toolchains,
+                                            "max_parallel_tasks": w.registration.max_parallel_tasks,
+                                            "active_tasks": w.active_tasks,
+                                            "status": if w.online { "ONLINE" } else { "OFFLINE" },
+                                            "latency_ms": w.latency_ms,
                                         })
-                                        .collect()
+                                    })
+                                    .collect()
                                 } else {
                                     Vec::new()
                                 };
@@ -277,7 +286,7 @@ impl DashboardServer {
                                     ("unknown".to_string(), 0, 0)
                                 };
 
-                            let hit_ratio = if cache.is_empty() { 0.0 } else { 1.0 };
+                            let hit_ratio = cache.hit_ratio();
 
                             let mut m = String::new();
                             m.push_str(
@@ -311,6 +320,16 @@ impl DashboardServer {
                             );
                             m.push_str("# TYPE onaji_cache_hit_ratio gauge\n");
                             m.push_str(&format!("onaji_cache_hit_ratio {:.4}\n", hit_ratio));
+                            m.push_str(
+                                "# HELP onaji_cache_hits_total Total execution cache hits recorded\n",
+                            );
+                            m.push_str("# TYPE onaji_cache_hits_total counter\n");
+                            m.push_str(&format!("onaji_cache_hits_total {}\n", cache.hits()));
+                            m.push_str(
+                                "# HELP onaji_cache_misses_total Total execution cache misses recorded\n",
+                            );
+                            m.push_str("# TYPE onaji_cache_misses_total counter\n");
+                            m.push_str(&format!("onaji_cache_misses_total {}\n", cache.misses()));
 
                             (
                                 "HTTP/1.1 200 OK",

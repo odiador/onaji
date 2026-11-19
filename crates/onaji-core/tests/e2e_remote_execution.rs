@@ -730,3 +730,268 @@ tasks:
     srv_handle.abort();
     let _ = srv_handle.await;
 }
+
+#[tokio::test]
+async fn test_coordinator_active_tasks_decremented_on_cancellation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_worker(Arc::new(WorkerDaemon::new(
+        "worker-cancel",
+        temp_dir.path(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    )));
+
+    let coord_clone = Arc::clone(&coordinator);
+    let handle = tokio::spawn(async move {
+        let assignment = onaji_protocol::messages::worker::TaskAssignment {
+            task_id: "slow_cancel_task".to_string(),
+            workspace_id: "default".to_string(),
+            action_cmd: "sleep 5".to_string(),
+            env: HashMap::new(),
+            cache_key: String::new(),
+            timeout_ms: 10000,
+            cache_paths: Vec::new(),
+        };
+        let _ = coord_clone.dispatch_task(assignment).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    assert_eq!(coordinator.worker_load("worker-cancel"), 1);
+
+    handle.abort();
+    let _ = handle.await;
+
+    assert_eq!(coordinator.worker_load("worker-cancel"), 0);
+}
+
+#[tokio::test]
+async fn test_tcp_worker_client_times_out_on_unresponsive_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let srv_handle = tokio::spawn(async move {
+        if let Ok((_socket, _)) = listener.accept().await {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    });
+
+    let client = onaji_core::remote::TcpWorkerClient::new(
+        "worker-unresponsive",
+        addr.to_string(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+    let assignment = onaji_protocol::messages::worker::TaskAssignment {
+        task_id: "timeout_tcp_task".to_string(),
+        workspace_id: "default".to_string(),
+        action_cmd: "echo never".to_string(),
+        env: HashMap::new(),
+        cache_key: String::new(),
+        timeout_ms: 200,
+        cache_paths: Vec::new(),
+    };
+
+    let start = std::time::Instant::now();
+    let report = onaji_core::remote::WorkerHandle::execute_assignment(&client, &assignment).await;
+
+    assert!(!report.success);
+    assert_eq!(report.exit_code, Some(124));
+    assert!(report.stderr.contains("Timed out"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+
+    srv_handle.abort();
+    let _ = srv_handle.await;
+}
+
+#[tokio::test]
+async fn test_tcp_worker_over_the_wire_artifact_transfer_and_cas_integration() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    let ws = root.join("workspace");
+    let sandbox = root.join("remote_sandbox");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    // 1. Levantar WorkerDaemon sobre TCP con sandbox completamente separado del workspace
+    let worker_daemon = Arc::new(WorkerDaemon::new(
+        "worker-wire",
+        &sandbox,
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let srv_addr = addr.to_string();
+    let srv_worker = Arc::clone(&worker_daemon);
+    let srv_handle = tokio::spawn(async move {
+        let _ = srv_worker.run_server(&srv_addr).await;
+    });
+
+    let mut ready = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(ready);
+
+    // 2. Ejecutar mediante TaskScheduler + RemoteExecutionBackend + TcpWorkerClient
+    let yaml = r#"
+version: "1"
+name: "wire_artifact_test"
+tasks:
+  gen_wire:
+    run: "mkdir -p out/nested && echo wire_payload > out/nested/hello.txt"
+    cache:
+      paths: ["out"]
+"#;
+    let (_, dag) = onaji_core::config::ConfigLoader::load_from_str(yaml).unwrap();
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_tcp_worker(
+        "worker-wire",
+        addr.to_string(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+    let backend = Arc::new(RemoteExecutionBackend::new(coordinator).with_workspace_root(&ws));
+
+    let mut cache = onaji_core::cache::ExecutionCache::new();
+    {
+        let mut scheduler = onaji_core::scheduler::TaskScheduler::new(&dag, &ws, &mut cache)
+            .with_backend(backend.clone());
+        let summary1 = scheduler
+            .execute_tasks(&[TaskId::new("gen_wire")])
+            .await
+            .unwrap();
+        assert!(summary1.success);
+        assert_eq!(
+            summary1.results[0].state,
+            onaji_core::cache::TaskState::Success
+        );
+    }
+
+    let wire_file = ws.join("out/nested/hello.txt");
+    assert!(wire_file.exists());
+    assert!(std::fs::read_to_string(&wire_file)
+        .unwrap()
+        .contains("wire_payload"));
+
+    // 3. Borrar `ws/out` y verificar restauración desde CAS + hits/misses/hit_ratio reales
+    std::fs::remove_dir_all(ws.join("out")).unwrap();
+    {
+        let mut scheduler =
+            onaji_core::scheduler::TaskScheduler::new(&dag, &ws, &mut cache).with_backend(backend);
+        let summary2 = scheduler
+            .execute_tasks(&[TaskId::new("gen_wire")])
+            .await
+            .unwrap();
+        assert!(summary2.success);
+        assert_eq!(
+            summary2.results[0].state,
+            onaji_core::cache::TaskState::Cached
+        );
+    }
+    assert!(std::fs::read_to_string(&wire_file)
+        .unwrap()
+        .contains("wire_payload"));
+    assert_eq!(cache.hits(), 1);
+    assert_eq!(cache.misses(), 1);
+    assert!((cache.hit_ratio() - 0.5).abs() < 1e-6);
+
+    srv_handle.abort();
+    let _ = srv_handle.await;
+
+    // 4. Servidor malicioso enviando archivo tar.zst con Zip-Slip (`../pwned.txt`) debe bloquearse con code 126
+    let mut evil_tar = Vec::new();
+    let mut header = tar::Header::new_gnu();
+    let evil_path = b"../pwned.txt";
+    {
+        let raw = header.as_mut_bytes();
+        raw[..evil_path.len()].copy_from_slice(evil_path);
+        raw[evil_path.len()] = 0;
+    }
+    header.set_size(4);
+    header.set_mode(0o644);
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    evil_tar.extend_from_slice(header.as_bytes());
+    let mut data_block = [0u8; 512];
+    data_block[..4].copy_from_slice(b"pwn!");
+    evil_tar.extend_from_slice(&data_block);
+    evil_tar.extend_from_slice(&[0u8; 1024]);
+
+    let mut compressed = Vec::new();
+    {
+        use std::io::Write;
+        let mut encoder = zstd::Encoder::new(&mut compressed, 3).unwrap();
+        encoder.write_all(&evil_tar).unwrap();
+        encoder.finish().unwrap();
+    }
+    let hex_payload = hex::encode(compressed);
+
+    let evil_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let evil_addr = evil_listener.local_addr().unwrap();
+    let evil_srv = tokio::spawn(async move {
+        if let Ok((stream, _)) = evil_listener.accept().await {
+            let (reader, mut writer) = tokio::io::split(stream);
+            let mut lines = BufReader::new(reader).lines();
+            let _ = lines.next_line().await;
+            let report = onaji_protocol::messages::worker::TaskExecutionReport {
+                task_id: "evil_wire".to_string(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: 1,
+                success: true,
+                worker_sandbox: None,
+                artifacts_tar_zst_hex: Some(hex_payload),
+            };
+            let mut s = serde_json::to_string(&report).unwrap();
+            s.push('\n');
+            let _ = writer.write_all(s.as_bytes()).await;
+            let _ = writer.flush().await;
+        }
+    });
+
+    let evil_coord = Arc::new(ClusterCoordinator::new());
+    evil_coord.register_tcp_worker(
+        "worker-evil",
+        evil_addr.to_string(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+    let evil_backend = RemoteExecutionBackend::new(evil_coord).with_workspace_root(&ws);
+    let evil_task = Task {
+        id: TaskId::new("evil_wire"),
+        description: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        action: Action::Command {
+            run: "echo evil".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+        },
+        cache_paths: vec![std::path::PathBuf::from("out")],
+        priority: onaji_core::TaskPriority::Normal,
+        tags: Vec::new(),
+        timeout_secs: Some(5),
+        retries: 0,
+    };
+
+    let err = evil_backend
+        .execute_task(&evil_task, None, &HashMap::new())
+        .await
+        .unwrap_err();
+    match err {
+        onaji_core::runner::RunnerError::ExecutionFailed { code, .. } => {
+            assert_eq!(code, Some(126));
+        }
+        other => panic!("Expected ExecutionFailed(126), got {:?}", other),
+    }
+    assert!(!root.join("pwned.txt").exists());
+
+    evil_srv.abort();
+    let _ = evil_srv.await;
+}

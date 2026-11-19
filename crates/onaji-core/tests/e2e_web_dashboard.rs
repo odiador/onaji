@@ -190,3 +190,87 @@ async fn test_web_dashboard_server_endpoints() {
     assert!(res_str8.contains("\"active_tasks\":0"));
     assert!(res_str8.contains("\"rust\":\"1.78.0\""));
 }
+
+#[tokio::test]
+async fn test_web_dashboard_real_worker_health_and_cache_hit_ratio() {
+    let port = 19891;
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // 1. Guardar cache con 3 hits y 1 miss -> hit_ratio = 0.75
+    let mut cache = onaji_core::cache::ExecutionCache::new();
+    cache.record_hit();
+    cache.record_hit();
+    cache.record_hit();
+    cache.record_miss();
+    cache.save(temp_dir.path()).unwrap();
+
+    // 2. Registrar 1 worker local (ONLINE) + 1 worker TCP en puerto cerrado (OFFLINE)
+    let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_addr = closed_listener.local_addr().unwrap();
+    drop(closed_listener);
+
+    let coordinator = Arc::new(ClusterCoordinator::new());
+    coordinator.register_worker(Arc::new(WorkerDaemon::new(
+        "worker-local-ok",
+        temp_dir.path(),
+        HashMap::from([("rust".to_string(), "1.78.0".to_string())]),
+    )));
+    coordinator.register_tcp_worker(
+        "worker-tcp-down",
+        closed_addr.to_string(),
+        HashMap::from([("sh".to_string(), "1.0".to_string())]),
+    );
+
+    let server = DashboardServer::new(port)
+        .with_workspace_root(temp_dir.path())
+        .with_coordinator(coordinator);
+
+    let srv = server.clone();
+    let srv_handle = tokio::spawn(async move {
+        let _ = srv.run().await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // 3. Verificar GET /api/status
+    let mut s1 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s1.write_all(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut r1 = Vec::new();
+    s1.read_to_end(&mut r1).await.unwrap();
+    let body1 = String::from_utf8_lossy(&r1);
+    assert!(body1.contains(r#""workers_online":1"#));
+    assert!(body1.contains(r#""workers_total":2"#));
+    assert!(body1.contains(r#""cache_hits":3"#));
+    assert!(body1.contains(r#""cache_misses":1"#));
+    assert!(body1.contains(r#""cache_hit_ratio":0.75"#));
+
+    // 4. Verificar GET /api/workers
+    let mut s2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s2.write_all(b"GET /api/workers HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut r2 = Vec::new();
+    s2.read_to_end(&mut r2).await.unwrap();
+    let body2 = String::from_utf8_lossy(&r2);
+    assert!(body2.contains("worker-local-ok"));
+    assert!(body2.contains("worker-tcp-down"));
+    assert!(body2.contains(r#""status":"ONLINE""#));
+    assert!(body2.contains(r#""status":"OFFLINE""#));
+
+    // 5. Verificar GET /metrics
+    let mut s3 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s3.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut r3 = Vec::new();
+    s3.read_to_end(&mut r3).await.unwrap();
+    let body3 = String::from_utf8_lossy(&r3);
+    assert!(body3.contains("onaji_cache_hit_ratio 0.7500"));
+    assert!(body3.contains("onaji_cache_hits_total 3"));
+    assert!(body3.contains("onaji_cache_misses_total 1"));
+
+    srv_handle.abort();
+    let _ = srv_handle.await;
+}

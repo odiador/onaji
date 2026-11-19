@@ -153,6 +153,70 @@ fn sync_sandbox_artifacts(
     Ok(())
 }
 
+fn unpack_remote_artifacts_safely(ws_root: &Path, archive_bytes: &[u8]) -> Result<(), RunnerError> {
+    if archive_bytes.len() > super::worker::MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES {
+        return Err(RunnerError::ExecutionFailed {
+            code: Some(126),
+            stderr: format!(
+                "Security violation: remote artifact archive exceeds limit ({} bytes)",
+                super::worker::MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES
+            ),
+        });
+    }
+
+    let ws_canon = ws_root.canonicalize()?;
+    let decoder = zstd::Decoder::new(std::io::Cursor::new(archive_bytes))?;
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries()?;
+
+    for entry_res in entries {
+        let mut entry = entry_res?;
+        let path = entry.path()?.to_path_buf();
+
+        if path.is_absolute()
+            || path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: unsafe archive path '{}' from remote worker",
+                    path.display()
+                ),
+            });
+        }
+
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: link entry '{}' rejected from remote worker archive",
+                    path.display()
+                ),
+            });
+        }
+
+        if !ws_canon.join(&path).starts_with(&ws_canon) {
+            return Err(RunnerError::ExecutionFailed {
+                code: Some(126),
+                stderr: format!(
+                    "Security violation: archive path '{}' escapes workspace root",
+                    path.display()
+                ),
+            });
+        }
+
+        entry.unpack_in(&ws_canon)?;
+    }
+
+    Ok(())
+}
+
 pub struct RemoteExecutionBackend {
     coordinator: Arc<super::coordinator::ClusterCoordinator>,
     workspace_root: Option<PathBuf>,
@@ -214,14 +278,24 @@ impl ExecutionBackend for RemoteExecutionBackend {
             TaskState::Failed
         };
 
-        // Sincronizar artefactos del sandbox del worker hacia el workspace local
+        // Sincronizar artefactos desde reporte en red o sandbox local hacia el workspace local
         if report.success {
-            if let (Some(ws_root), Some(sandbox_str)) =
-                (&self.workspace_root, &report.worker_sandbox)
-            {
-                let sandbox = Path::new(sandbox_str);
-                if sandbox.exists() {
-                    sync_sandbox_artifacts(sandbox, ws_root, &task.cache_paths)?;
+            if let Some(ws_root) = &self.workspace_root {
+                if let Some(hex_archive) = &report.artifacts_tar_zst_hex {
+                    let bytes =
+                        hex::decode(hex_archive).map_err(|err| RunnerError::ExecutionFailed {
+                            code: Some(1),
+                            stderr: format!(
+                                "Failed to decode remote artifact archive hex: {}",
+                                err
+                            ),
+                        })?;
+                    unpack_remote_artifacts_safely(ws_root, &bytes)?;
+                } else if let Some(sandbox_str) = &report.worker_sandbox {
+                    let sandbox = Path::new(sandbox_str);
+                    if sandbox.exists() {
+                        sync_sandbox_artifacts(sandbox, ws_root, &task.cache_paths)?;
+                    }
                 }
             }
         }

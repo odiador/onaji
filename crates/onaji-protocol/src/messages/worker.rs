@@ -32,4 +32,6 @@ pub struct TaskExecutionReport {
     pub success: bool,
     #[serde(default)]
     pub worker_sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts_tar_zst_hex: Option<String>,
 }

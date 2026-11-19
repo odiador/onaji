@@ -4,6 +4,41 @@ use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, Work
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+#[derive(Debug, Clone)]
+pub struct WorkerHealthStatus {
+    pub registration: WorkerRegistration,
+    pub active_tasks: usize,
+    pub online: bool,
+    pub latency_ms: Option<u64>,
+}
+
+struct ActiveTaskGuard {
+    active_tasks: Arc<RwLock<HashMap<String, usize>>>,
+    worker_id: String,
+}
+
+impl ActiveTaskGuard {
+    fn acquire(active_tasks: Arc<RwLock<HashMap<String, usize>>>, worker_id: String) -> Self {
+        if let Ok(mut loads) = active_tasks.write() {
+            *loads.entry(worker_id.clone()).or_insert(0) += 1;
+        }
+        Self {
+            active_tasks,
+            worker_id,
+        }
+    }
+}
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        if let Ok(mut loads) = self.active_tasks.write() {
+            if let Some(val) = loads.get_mut(&self.worker_id) {
+                *val = val.saturating_sub(1);
+            }
+        }
+    }
+}
+
 pub struct ClusterCoordinator {
     workers: Arc<RwLock<HashMap<String, Arc<dyn WorkerHandle>>>>,
     active_tasks: Arc<RwLock<HashMap<String, usize>>>,
@@ -64,6 +99,45 @@ impl ClusterCoordinator {
     pub fn worker_load(&self, worker_id: &str) -> usize {
         let loads = self.active_tasks.read().unwrap();
         loads.get(worker_id).copied().unwrap_or(0)
+    }
+
+    pub async fn inspect_workers_health(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Vec<WorkerHealthStatus> {
+        let snapshot: Vec<(Arc<dyn WorkerHandle>, usize)> = {
+            let map = self.workers.read().unwrap();
+            let loads = self.active_tasks.read().unwrap();
+            map.values()
+                .map(|w| {
+                    let active = loads.get(&w.registration().worker_id).copied().unwrap_or(0);
+                    (Arc::clone(w), active)
+                })
+                .collect()
+        };
+
+        let mut handles = Vec::with_capacity(snapshot.len());
+        for (worker, active_tasks) in snapshot {
+            handles.push(tokio::spawn(async move {
+                let reg = worker.registration().clone();
+                let latency_ms = worker.ping_latency(timeout).await;
+                WorkerHealthStatus {
+                    registration: reg,
+                    active_tasks,
+                    online: latency_ms.is_some(),
+                    latency_ms,
+                }
+            }));
+        }
+
+        let mut out = Vec::with_capacity(handles.len());
+        for h in handles {
+            if let Ok(status) = h.await {
+                out.push(status);
+            }
+        }
+        out.sort_by(|a, b| a.registration.worker_id.cmp(&b.registration.worker_id));
+        out
     }
 
     /// Retorna todos los workers compatibles con el toolchain requerido,
@@ -129,21 +203,9 @@ impl ClusterCoordinator {
         for worker in candidates {
             let worker_id = worker.registration().worker_id.clone();
 
-            // Incrementar contador de tareas activas del worker seleccionado
-            {
-                let mut loads = self.active_tasks.write().unwrap();
-                *loads.entry(worker_id.clone()).or_insert(0) += 1;
-            }
-
+            let _guard = ActiveTaskGuard::acquire(Arc::clone(&self.active_tasks), worker_id);
             let report = worker.execute_assignment(&assignment).await;
-
-            // Decrementar contador de tareas activas al finalizar
-            {
-                let mut loads = self.active_tasks.write().unwrap();
-                if let Some(val) = loads.get_mut(&worker_id) {
-                    *val = val.saturating_sub(1);
-                }
-            }
+            drop(_guard);
 
             if report.success {
                 return Ok(report);

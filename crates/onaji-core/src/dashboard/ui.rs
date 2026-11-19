@@ -187,7 +187,8 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
           const wData = await workersRes.json();
           const container = document.getElementById('cluster-workers-list');
           if (container && wData.workers) {
-            document.getElementById('worker-count').innerText = wData.workers.length + ' Connected';
+            const onlineCount = wData.workers.filter(w => w.status === 'ONLINE').length;
+            document.getElementById('worker-count').innerText = `${onlineCount} / ${wData.workers.length} Online`;
             if (wData.workers.length === 0) {
               container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px;">No remote workers registered (local execution)</div>';
             } else {
@@ -196,13 +197,17 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 const div = document.createElement('div');
                 div.className = 'worker-card';
                 const tcTags = Object.entries(w.toolchains || {}).map(([k, v]) => `<span class="tag">${k} ${v}</span>`).join(' ');
+                const statusColor = w.status === 'ONLINE' ? 'var(--success)' : 'var(--failed)';
+                const statusLabel = (w.latency_ms !== null && w.latency_ms !== undefined)
+                  ? `${w.status} (${w.latency_ms}ms)`
+                  : w.status;
                 div.innerHTML = `
                   <div>
                     <div class="worker-id">${w.worker_id}</div>
                     <div class="worker-toolchains">${tcTags}</div>
                   </div>
                   <div style="text-align:right">
-                    <div style="font-size:12px;color:var(--success);font-weight:700">${w.status}</div>
+                    <div style="font-size:12px;color:${statusColor};font-weight:700">${statusLabel}</div>
                     <div style="font-size:11px;color:var(--text-muted)">Load: ${w.active_tasks} / ${w.max_parallel_tasks}</div>
                   </div>
                 `;

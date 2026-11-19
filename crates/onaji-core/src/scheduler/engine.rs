@@ -243,6 +243,7 @@ impl<'a> TaskScheduler<'a> {
 
                 if is_hit {
                     // CACHE HIT
+                    self.cache.record_hit();
                     if let Some(tx) = &self.event_tx {
                         let _ = tx.send(format!(
                             "event: task.cached\r\ndata: {{\"task_id\":\"{}\"}}\r\n\r\n",
@@ -271,6 +272,7 @@ impl<'a> TaskScheduler<'a> {
                     }
                 } else {
                     // CACHE MISS -> Programar para ejecución concurrente
+                    self.cache.record_miss();
                     tasks_to_run_parallel.push((task.clone(), cache_key));
                 }
             }

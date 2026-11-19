@@ -44,6 +44,10 @@ pub struct TaskExecutionRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecutionCache {
     records: HashMap<String, TaskExecutionRecord>,
+    #[serde(default)]
+    hits: u64,
+    #[serde(default)]
+    misses: u64,
 }
 
 impl ExecutionCache {
@@ -81,6 +85,33 @@ impl ExecutionCache {
 
     pub fn clear(&mut self) {
         self.records.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    pub fn record_hit(&mut self) {
+        self.hits = self.hits.saturating_add(1);
+    }
+
+    pub fn record_miss(&mut self) {
+        self.misses = self.misses.saturating_add(1);
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    pub fn hit_ratio(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
     }
 
     pub fn len(&self) -> usize {

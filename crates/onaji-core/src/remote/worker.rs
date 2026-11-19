@@ -1,15 +1,168 @@
 use async_trait::async_trait;
 use onaji_protocol::messages::worker::{TaskAssignment, TaskExecutionReport, WorkerRegistration};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
+
+pub const MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
 
 #[async_trait]
 pub trait WorkerHandle: Send + Sync {
     fn registration(&self) -> &WorkerRegistration;
     async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport;
+    async fn ping_latency(&self, _timeout: std::time::Duration) -> Option<u64> {
+        Some(0)
+    }
+}
+
+fn append_confined_dir_to_tar<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    rel_prefix: &Path,
+    abs_dir: &Path,
+    sandbox_canon: &Path,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(abs_dir)
+        .map_err(|e| format!("Failed reading sandbox dir '{}': {}", abs_dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed dir entry: {}", e))?;
+        let from = entry.path();
+        let entry_rel = rel_prefix.join(entry.file_name());
+        let meta = std::fs::symlink_metadata(&from)
+            .map_err(|e| format!("Failed metadata for '{}': {}", from.display(), e))?;
+        if meta.file_type().is_symlink() {
+            let target = from.canonicalize().map_err(|_| {
+                format!(
+                    "Security violation: unsafe symlink '{}' in worker sandbox",
+                    from.display()
+                )
+            })?;
+            if !target.starts_with(sandbox_canon) || target.is_dir() {
+                return Err(format!(
+                    "Security violation: unsafe symlink '{}' in worker sandbox",
+                    from.display()
+                ));
+            }
+            let mut f = std::fs::File::open(&target).map_err(|e| {
+                format!(
+                    "Failed opening symlink target '{}': {}",
+                    target.display(),
+                    e
+                )
+            })?;
+            builder
+                .append_file(&entry_rel, &mut f)
+                .map_err(|e| format!("Failed packing '{}': {}", entry_rel.display(), e))?;
+        } else if meta.is_dir() {
+            append_confined_dir_to_tar(builder, &entry_rel, &from, sandbox_canon)?;
+        } else if meta.is_file() {
+            let mut f = std::fs::File::open(&from)
+                .map_err(|e| format!("Failed opening '{}': {}", from.display(), e))?;
+            builder
+                .append_file(&entry_rel, &mut f)
+                .map_err(|e| format!("Failed packing '{}': {}", entry_rel.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
+fn pack_sandbox_artifacts_safely(
+    sandbox: &Path,
+    cache_paths: &[String],
+) -> Result<Option<Vec<u8>>, String> {
+    if cache_paths.is_empty() {
+        return Ok(None);
+    }
+
+    let sandbox_canon = sandbox
+        .canonicalize()
+        .map_err(|e| format!("Failed canonicalizing worker sandbox: {}", e))?;
+
+    let mut validated: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for rel_str in cache_paths {
+        let rel_path = Path::new(rel_str);
+        if rel_path.is_absolute()
+            || rel_path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!(
+                "Security violation: unsafe cache_path '{}' in worker artifact pack",
+                rel_str
+            ));
+        }
+
+        let src = sandbox_canon.join(rel_path);
+        match std::fs::symlink_metadata(&src) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Failed reading metadata for '{}': {}",
+                    src.display(),
+                    e
+                ))
+            }
+        }
+
+        let src_canon = src.canonicalize().map_err(|_| {
+            format!(
+                "Security violation: unsafe symlink '{}' in worker sandbox",
+                src.display()
+            )
+        })?;
+        if !src_canon.starts_with(&sandbox_canon) {
+            return Err(format!(
+                "Security violation: cache_path '{}' resolves outside worker sandbox",
+                rel_str
+            ));
+        }
+        let rel_clean = rel_path
+            .strip_prefix("./")
+            .unwrap_or(rel_path)
+            .to_path_buf();
+        validated.push((rel_clean, src_canon));
+    }
+
+    if validated.is_empty() {
+        return Ok(None);
+    }
+
+    let mut buf = Vec::new();
+    {
+        let encoder = zstd::Encoder::new(&mut buf, 3)
+            .map_err(|e| format!("Failed creating zstd encoder: {}", e))?
+            .auto_finish();
+        let mut builder = tar::Builder::new(encoder);
+
+        for (rel_clean, src_canon) in validated {
+            if src_canon.is_dir() {
+                append_confined_dir_to_tar(&mut builder, &rel_clean, &src_canon, &sandbox_canon)?;
+            } else if src_canon.is_file() {
+                let mut f = std::fs::File::open(&src_canon)
+                    .map_err(|e| format!("Failed opening '{}': {}", src_canon.display(), e))?;
+                builder
+                    .append_file(&rel_clean, &mut f)
+                    .map_err(|e| format!("Failed packing '{}': {}", rel_clean.display(), e))?;
+            }
+        }
+        builder
+            .finish()
+            .map_err(|e| format!("Failed finishing artifact tar archive: {}", e))?;
+    }
+
+    if buf.len() > MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES {
+        return Err(format!(
+            "Artifact archive exceeds max remote transfer size ({} bytes)",
+            MAX_REMOTE_ARTIFACT_ARCHIVE_BYTES
+        ));
+    }
+
+    Ok(Some(buf))
 }
 
 pub struct WorkerDaemon {
@@ -113,6 +266,7 @@ impl WorkerDaemon {
                         duration_ms,
                         success: false,
                         worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
+                        artifacts_tar_zst_hex: None,
                     };
                 }
             }
@@ -136,6 +290,7 @@ impl WorkerDaemon {
                     duration_ms,
                     success,
                     worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
+                    artifacts_tar_zst_hex: None,
                 }
             }
             Err(err) => {
@@ -148,6 +303,7 @@ impl WorkerDaemon {
                     duration_ms,
                     success: false,
                     worker_sandbox: Some(self.sandbox_root.to_string_lossy().to_string()),
+                    artifacts_tar_zst_hex: None,
                 }
             }
         }
@@ -185,6 +341,7 @@ impl WorkerDaemon {
                                 duration_ms: 0,
                                 success: false,
                                 worker_sandbox: None,
+                                artifacts_tar_zst_hex: None,
                             };
                             if let Ok(mut resp_str) = serde_json::to_string(&report) {
                                 resp_str.push('\n');
@@ -195,7 +352,28 @@ impl WorkerDaemon {
                         }
                     };
 
-                    let report = worker.execute_assignment(&assignment).await;
+                    let mut report = worker.execute_assignment(&assignment).await;
+                    if report.success && !assignment.cache_paths.is_empty() {
+                        match pack_sandbox_artifacts_safely(
+                            &worker.sandbox_root,
+                            &assignment.cache_paths,
+                        ) {
+                            Ok(Some(bytes)) => {
+                                report.artifacts_tar_zst_hex = Some(hex::encode(bytes));
+                                report.worker_sandbox = None;
+                            }
+                            Ok(None) => {
+                                report.worker_sandbox = None;
+                            }
+                            Err(err_msg) => {
+                                report.success = false;
+                                report.exit_code = Some(126);
+                                report.stderr = err_msg;
+                                report.worker_sandbox = None;
+                                report.artifacts_tar_zst_hex = None;
+                            }
+                        }
+                    }
                     if let Ok(mut resp_str) = serde_json::to_string(&report) {
                         resp_str.push('\n');
                         let _ = writer.write_all(resp_str.as_bytes()).await;
@@ -262,32 +440,58 @@ impl WorkerHandle for TcpWorkerClient {
         &self.registration
     }
 
+    async fn ping_latency(&self, timeout: std::time::Duration) -> Option<u64> {
+        TcpWorkerClient::ping_latency(self, timeout).await
+    }
+
     async fn execute_assignment(&self, assignment: &TaskAssignment) -> TaskExecutionReport {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::TcpStream;
 
         let start = Instant::now();
-        let stream = match TcpStream::connect(&self.address).await {
-            Ok(s) => s,
-            Err(err) => {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                return TaskExecutionReport {
-                    task_id: assignment.task_id.clone(),
-                    exit_code: Some(1),
-                    stdout: String::new(),
-                    stderr: format!(
-                        "Failed to connect to remote worker at {}: {}",
-                        self.address, err
-                    ),
-                    duration_ms,
-                    success: false,
-                    worker_sandbox: None,
-                };
-            }
+        let connect_timeout = if assignment.timeout_ms > 0 {
+            std::time::Duration::from_millis(assignment.timeout_ms.min(5000))
+        } else {
+            std::time::Duration::from_secs(5)
         };
 
-        let (reader, mut writer) = tokio::io::split(stream);
-        let mut lines = BufReader::new(reader).lines();
+        let stream =
+            match tokio::time::timeout(connect_timeout, TcpStream::connect(&self.address)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(err)) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(1),
+                        stdout: String::new(),
+                        stderr: format!(
+                            "Failed to connect to remote worker at {}: {}",
+                            self.address, err
+                        ),
+                        duration_ms,
+                        success: false,
+                        worker_sandbox: None,
+                        artifacts_tar_zst_hex: None,
+                    };
+                }
+                Err(_) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(124),
+                        stdout: String::new(),
+                        stderr: format!(
+                            "Timed out connecting to remote worker at {} after {}ms",
+                            self.address,
+                            connect_timeout.as_millis()
+                        ),
+                        duration_ms,
+                        success: false,
+                        worker_sandbox: None,
+                        artifacts_tar_zst_hex: None,
+                    };
+                }
+            };
 
         let mut req_str = match serde_json::to_string(assignment) {
             Ok(s) => s,
@@ -301,63 +505,102 @@ impl WorkerHandle for TcpWorkerClient {
                     duration_ms,
                     success: false,
                     worker_sandbox: None,
+                    artifacts_tar_zst_hex: None,
                 };
             }
         };
         req_str.push('\n');
 
-        if let Err(err) = writer.write_all(req_str.as_bytes()).await {
-            let duration_ms = start.elapsed().as_millis() as u64;
-            return TaskExecutionReport {
-                task_id: assignment.task_id.clone(),
-                exit_code: Some(1),
-                stdout: String::new(),
-                stderr: format!("Failed to transmit task to remote worker: {}", err),
-                duration_ms,
-                success: false,
-                worker_sandbox: None,
-            };
-        }
-        let _ = writer.flush().await;
+        let io_timeout = if assignment.timeout_ms > 0 {
+            std::time::Duration::from_millis(assignment.timeout_ms.saturating_add(500))
+        } else {
+            std::time::Duration::from_secs(300)
+        };
 
-        match lines.next_line().await {
-            Ok(Some(line)) => match serde_json::from_str::<TaskExecutionReport>(&line) {
-                Ok(report) => report,
+        let io_result = tokio::time::timeout(io_timeout, async {
+            let (reader, mut writer) = tokio::io::split(stream);
+            let mut lines = BufReader::new(reader).lines();
+
+            if let Err(err) = writer.write_all(req_str.as_bytes()).await {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return TaskExecutionReport {
+                    task_id: assignment.task_id.clone(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!("Failed to transmit task to remote worker: {}", err),
+                    duration_ms,
+                    success: false,
+                    worker_sandbox: None,
+                    artifacts_tar_zst_hex: None,
+                };
+            }
+            let _ = writer.flush().await;
+
+            match lines.next_line().await {
+                Ok(Some(line)) => match serde_json::from_str::<TaskExecutionReport>(&line) {
+                    Ok(report) => report,
+                    Err(err) => {
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        TaskExecutionReport {
+                            task_id: assignment.task_id.clone(),
+                            exit_code: Some(1),
+                            stdout: String::new(),
+                            stderr: format!("Malformed response from remote worker: {}", err),
+                            duration_ms,
+                            success: false,
+                            worker_sandbox: None,
+                            artifacts_tar_zst_hex: None,
+                        }
+                    }
+                },
+                Ok(None) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    TaskExecutionReport {
+                        task_id: assignment.task_id.clone(),
+                        exit_code: Some(1),
+                        stdout: String::new(),
+                        stderr: "Remote worker connection closed before report received"
+                            .to_string(),
+                        duration_ms,
+                        success: false,
+                        worker_sandbox: None,
+                        artifacts_tar_zst_hex: None,
+                    }
+                }
                 Err(err) => {
                     let duration_ms = start.elapsed().as_millis() as u64;
                     TaskExecutionReport {
                         task_id: assignment.task_id.clone(),
                         exit_code: Some(1),
                         stdout: String::new(),
-                        stderr: format!("Malformed response from remote worker: {}", err),
+                        stderr: format!("Error reading from remote worker: {}", err),
                         duration_ms,
                         success: false,
                         worker_sandbox: None,
+                        artifacts_tar_zst_hex: None,
                     }
                 }
-            },
-            Ok(None) => {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                TaskExecutionReport {
-                    task_id: assignment.task_id.clone(),
-                    exit_code: Some(1),
-                    stdout: String::new(),
-                    stderr: "Remote worker connection closed before report received".to_string(),
-                    duration_ms,
-                    success: false,
-                    worker_sandbox: None,
-                }
             }
-            Err(err) => {
+        })
+        .await;
+
+        match io_result {
+            Ok(report) => report,
+            Err(_) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 TaskExecutionReport {
                     task_id: assignment.task_id.clone(),
-                    exit_code: Some(1),
+                    exit_code: Some(124),
                     stdout: String::new(),
-                    stderr: format!("Error reading from remote worker: {}", err),
+                    stderr: format!(
+                        "Timed out waiting for response from remote worker at {} after {}ms",
+                        self.address,
+                        io_timeout.as_millis()
+                    ),
                     duration_ms,
                     success: false,
                     worker_sandbox: None,
+                    artifacts_tar_zst_hex: None,
                 }
             }
         }
